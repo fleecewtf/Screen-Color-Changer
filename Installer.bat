@@ -238,6 +238,12 @@ if errorlevel 1 (
     goto Failed
 )
 echo      App source and shortcut support are ready.
+call :CheckDependencyLock
+if errorlevel 1 (
+    set "FAIL_MESSAGE=The reviewed dependency lock is missing, unsafe, or changed."
+    set "REPAIR_HINT=Re-extract the complete official ZIP; do not edit its requirements files."
+    goto Failed
+)
 
 echo.
 echo   [ STEP 1 / 3 ]   Private Python environment
@@ -627,11 +633,22 @@ call :ReplaceDirectory "%PACKAGE_BACKUP%" "%PACKAGE_TARGET%"
 if errorlevel 1 exit /b 1
 exit /b %PACKAGE_TRANSACTION_CODE%
 
-:ValidatePipRequirements
+:SelectPipLockDigest
 set "PIP_REQUIREMENTS_SHA256="
 if /I "%ARCH%"=="x64" set "PIP_REQUIREMENTS_SHA256=983be76416fc7d19411a99e0ffa72e8fe86ff930f2f191807373a1eb24bba84e"
 if /I "%ARCH%"=="arm64" set "PIP_REQUIREMENTS_SHA256=1ce422b1f781a71a6f5be9bd8aec8cff0b8f804d0d28e4f5780f52b8d997a79b"
 if not defined PIP_REQUIREMENTS_SHA256 exit /b 1
+exit /b 0
+
+:CheckDependencyLock
+call :SelectPipLockDigest
+if errorlevel 1 exit /b 1
+"%POWERSHELL_EXE%" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; $item=Get-Item -LiteralPath $env:PIP_REQUIREMENTS -Force; if($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0){throw 'Dependency lock is unsafe'}; $stream=[IO.File]::OpenRead($item.FullName); $sha=[Security.Cryptography.SHA256]::Create(); try{$digest=([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-',''); if($digest -ne $env:PIP_REQUIREMENTS_SHA256){throw 'Dependency lock SHA-256 mismatch'}}finally{$stream.Dispose();$sha.Dispose()}" >>"%LOG%" 2>&1
+exit /b %ERRORLEVEL%
+
+:ValidatePipRequirements
+call :SelectPipLockDigest
+if errorlevel 1 exit /b 1
 "%APP_PY%" -I -c "import hashlib, os, stat; from pathlib import Path; path=Path(os.environ['PIP_REQUIREMENTS']); info=path.stat(follow_symlinks=False); assert stat.S_ISREG(info.st_mode) and not path.is_symlink() and not (getattr(info, 'st_file_attributes', 0) & 1024), 'Dependency lock is unsafe'; assert hashlib.sha256(path.read_bytes()).hexdigest() == os.environ['PIP_REQUIREMENTS_SHA256'], 'Dependency lock SHA-256 mismatch'" >>"%LOG%" 2>&1
 if not errorlevel 1 exit /b 0
 set "LOG_MESSAGE=The reviewed dependency lock is missing, unsafe, or changed. Re-extract the complete official ZIP."

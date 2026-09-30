@@ -1,6 +1,6 @@
 """Careful wrapper for Windows' shared full-screen Magnification color effect.
 
-Display changes require Apply or explicit recovery. Reading a previous
+Display changes require a live preview, Apply or explicit recovery. Reading a previous
 session's recovery state can also load the API. Windows color state is shared.
 """
 
@@ -271,6 +271,23 @@ class GammaEffect:
             if plan["gamma"] == 100:
                 self.originals, self.last, self.devices = {}, {}, {}
 
+    def verify_current(self, gamma):
+        """Read-only ownership check before confirming/retaining a preview."""
+        if not self.originals:
+            if gamma != 100:
+                raise ScreenEffectError("The requested Gamma preview is no longer active. Preview it again before applying.")
+            return
+        api = self._api()
+        if api.snapshot() != self.devices:
+            raise ScreenEffectError("The display configuration changed. Its current Gamma will not be overwritten.")
+        for name, expected in self.last.items():
+            if not _ramps_match(expected, gamma_ramp(self.originals[name], gamma), tolerance=2):
+                raise ScreenEffectError("The requested Gamma preview is no longer active. Preview it again before applying.")
+            # last contains the exact accepted driver readback. Do not treat a
+            # newer external ramp as ours merely because it is close to it.
+            if not _ramps_match(api.read(name), expected):
+                raise ScreenEffectError("Another app changed display Gamma. Its settings will not be overwritten.")
+
     def restore(self):
         if not self.originals:
             return True
@@ -505,16 +522,47 @@ class ScreenEffect:
         if record is None:
             return
         self.initialize()
-        current = self._read_matrix()
         candidates = [record["target"]]
         if record["previous"] is not None:
             candidates.append(record["previous"])
-        if restore and any(matrices_match(current, item) for item in candidates):
-            self._write_matrix(tuple(record["original"]))
         if restore:
-            self._gamma.recover(record.get("gamma"))
+            failures = []
+            try:
+                current = self._read_matrix()
+                if any(matrices_match(current, item) for item in candidates):
+                    original = tuple(record["original"])
+                    self._write_matrix(original)
+                    if not matrices_match(self._read_matrix(), original):
+                        raise ScreenEffectError("Windows did not restore the previous desktop color effect.")
+            except (ScreenEffectError, OSError) as error:
+                failures.append(error)
+            try:
+                # The layers restore independently: a declined matrix restore
+                # must not leave an otherwise recoverable Gamma ramp behind.
+                self._gamma.recover(record.get("gamma"))
+            except (ScreenEffectError, OSError) as error:
+                failures.append(error)
+            if failures:
+                # Retain the original durable record even after partial success;
+                # retry recognizes any remaining owned layer without rewriting
+                # restored or newer external state.
+                raise ScreenEffectError("Windows could not fully recover previous colors. The recovery record was retained; close and reopen to retry.") from failures[0]
+        else:
+            # Declining after a failed recovery must not implicitly restore the
+            # Gamma layer through disable(). Relinquish it without a write.
+            self._gamma.originals, self._gamma.last, self._gamma.devices = {}, {}, {}
         self._clear_recovery()
         self.disable()
+
+    def verify_current(self, values):
+        """Verify actual shared display state without reapplying any layer."""
+        if not self._initialized or self._last_applied is None:
+            raise ScreenEffectError("The requested color preview is no longer active. Preview it again before applying.")
+        current = self._read_matrix()
+        if (not matrices_match(current, self._last_applied)
+                or not matrices_match(current, color_matrix(values))):
+            raise ScreenEffectError("Another app changed the desktop color effect. This app will not overwrite it.")
+        self._gamma.verify_current(values.gamma)
 
     def apply(self, values):
         self.initialize()

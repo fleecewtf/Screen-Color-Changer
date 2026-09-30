@@ -1,6 +1,6 @@
-SCREEN COLOR CHANGER
+SCREEN COLOR CHANGER - v0.3.1 LOCAL RELEASE CANDIDATE
 
-Compact local color-filter utility for 64-bit Windows. First prototype; not a
+Compact local color-filter utility for 64-bit Windows. Local candidate; not a
 published site download.
 
 INSTALL
@@ -22,16 +22,30 @@ It has Digital vibrance (0-300%, neutral 100%), Hue (-180 to 180 degrees),
 Brightness (-20 to 20%, neutral 0%), Contrast (50-200%, neutral 100%), and
 Gamma (0.50 to 2.00, neutral 1.00). Type an exact value above each slider or
 use its arrow keys. Gamma moves in 0.01 steps, including 1.03. The other
-controls move one unit at a time. Apply starts a 15-second preview;
-press Keep colors before it ends or the previous colors return automatically.
-Changing values does not alter the desktop until Apply or Update is pressed.
-Disable restores the prior effect when its matrix still matches this app's
-last-applied matrix. Esc also disables while the window has focus. Reset
-returns the controls to defaults.
-Saved values do not auto-apply on startup. Closing attempts safe restoration.
+controls move one unit at a time, including 255% vibrance. Moving or scrolling
+the controls previews the filter immediately. Finish typing a numeric entry
+with Enter or by leaving its box. Rapid edits are coalesced every 75 ms.
+Apply confirms the latest values and saves them locally. Slider edits alone
+are never saved.
+Apply and close-to-tray check the actual Windows matrix and tracked gamma again;
+an external program's newer effect is not silently reported as successfully applied.
+Unconfirmed previews revert after 15 seconds of inactivity,
+returning to your last applied profile or the prior desktop colors. Continuing
+to adjust a control refreshes this safety timer.
+Closing before Apply restores the prior colors and exits. After Apply,
+closing discards any later unsaved edits and keeps the applied profile in the
+tray. Click its icon, choose Open settings, or launch the shortcut again to return
+to the same running utility. Exit and restore
+original colors fully quits. If no tray is available, close always restores.
+Disable or Esc restores the prior effect while the window has focus. Reset
+immediately restores the prior colors and saves all five neutral values.
+Restoration is ownership-aware: another app's newer effect or a changed
+display is left alone. Saved values do not auto-apply on launch or restart.
 After an unexpected exit, the next launch can offer to restore prior colors
 if the recorded color matrix still matches. An external app applying an
 identical matrix cannot be distinguished by this comparison.
+Crash recovery verifies restoration before deleting its record. Failed restoration
+keeps recovery evidence for a later retry.
 
 LIMITATIONS
 
@@ -51,18 +65,20 @@ Setup keeps official Python 3.14.7, pip, PySide6-Essentials 6.11.2, settings,
 and app files private to this folder. It needs internet for first setup or
 repair, but does not need administrator access, change PATH, or install global
 packages. Runtime archives and PyPI wheels are checked against pinned SHA-256
-hashes; a missing or changed selected dependency lock stops setup. Keep both
-architecture locks if moving between x64 and ARM64 computers. Run
-Installer.bat again to repair or after moving the
-complete folder. It compiles all three Python sources before package downloads
+hashes; a missing or changed selected dependency lock stops setup.
+The selected lock is checked before the first download, including during repair.
+Keep both architecture locks if moving between x64 and ARM64 computers. Run
+Installer.bat again to repair or after moving the complete folder.
+It compiles all three Python sources before package downloads
 and runs an offline self-test without changing the display before success.
 
 PRIVACY AND REMOVAL
 
 No account or telemetry is required. Saved values stay in this folder. Review
 setup.log before sharing because it can contain local folder paths. To remove
-the tool, disable or close it, then delete the extracted folder. No service,
-startup entry, or global runtime is installed.
+the tool, use Exit and restore original colors in its tray menu (or Disable
+then close), then delete the extracted folder. Applied tray mode is the same
+running utility; no service, startup entry, or global runtime is installed.
 
 TROUBLESHOOTING
 
