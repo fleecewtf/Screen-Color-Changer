@@ -5,7 +5,7 @@ A compact, local color-filter utility for 64-bit Windows. This is a **first prot
 ## What it does
 
 - Uses a small 448 × 448 window rather than a full-size multi-page app.
-- Adjusts saturation (0–300%), contrast (0–200%), and brightness (−50–50%) with three sliders.
+- Adjusts saturation (0–300%), contrast (50–200%), and brightness (−20–20%) with three sliders. The contrast/brightness limits avoid a uniformly black or white desktop even if the app stops unexpectedly.
 - Shows a synchronized numeric entry above each slider. Type any integer in range or use the one-unit arrow controls for exact values; dragging a slider does not limit the numbers you can enter.
 - Provides **Apply**, **Disable**, and **Reset**. Apply starts a 15-second preview; the prior colors return automatically unless you press **Keep colors**. Values are saved locally, but the filter is **not** applied automatically when the app starts.
 - Uses Windows' full-screen Magnification color matrix, independently of NVIDIA Control Panel. It does not install a display driver.

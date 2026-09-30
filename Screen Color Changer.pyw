@@ -37,7 +37,7 @@ from PySide6.QtWidgets import (
 
 
 APP_NAME = "Screen Color Changer"
-APP_VERSION = "0.1.0"
+APP_VERSION = "0.1.1"
 WINDOW_SIZE = 448
 SETTINGS_PATH = ROOT / ".runtime" / "settings.ini"
 RECOVERY_PATH = ROOT / ".runtime" / "color-recovery.json"
@@ -238,8 +238,8 @@ class ColorWindow(QWidget):
         panel_layout.setContentsMargins(15, 9, 15, 9)
         panel_layout.setSpacing(5)
         self.saturation = ExactControl("Saturation", 0, 300, 100)
-        self.contrast = ExactControl("Contrast", 0, 200, 100)
-        self.brightness = ExactControl("Brightness", -50, 50, 0)
+        self.contrast = ExactControl("Contrast", 50, 200, 100)
+        self.brightness = ExactControl("Brightness", -20, 20, 0)
         for control in (self.saturation, self.contrast, self.brightness):
             panel_layout.addWidget(control)
             control.number.valueChanged.connect(self._values_changed)
@@ -532,12 +532,12 @@ def _self_test(folder: Path) -> int:
             return True
 
     # Exercise the safety countdown without loading Magnification.dll or
-    # altering the desktop, including the all-black matrix edge case.
+    # altering the desktop, using the darkest allowed setting.
     fake = FakeEffect()
     window.effect = fake
     window.testing = False
-    window.contrast.set_value(0)
-    window.brightness.set_value(-50)
+    window.contrast.set_value(50)
+    window.brightness.set_value(-20)
     window._apply_clicked()
     assert fake.active and window._preview_remaining == 15
     assert not window.apply_button.isEnabled()  # avoid accidental double-click confirmation

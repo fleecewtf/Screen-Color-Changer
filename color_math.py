@@ -4,8 +4,8 @@ from dataclasses import dataclass
 
 
 SATURATION_LIMITS = (0, 300)
-CONTRAST_LIMITS = (0, 200)
-BRIGHTNESS_LIMITS = (-50, 50)
+CONTRAST_LIMITS = (50, 200)
+BRIGHTNESS_LIMITS = (-20, 20)
 LUMA = (0.2126, 0.7152, 0.0722)
 
 

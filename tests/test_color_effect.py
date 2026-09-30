@@ -70,9 +70,20 @@ class ColorMathTests(unittest.TestCase):
             self.assertAlmostEqual(matrix[20 + output], -0.2)
         self.assertEqual(matrix[18], 1.0)  # Alpha remains unchanged.
 
+    def test_allowed_extremes_keep_black_and_white_distinguishable(self):
+        for saturation in (0, 300):
+            for contrast in (50, 200):
+                for brightness in (-20, 20):
+                    matrix = color_matrix(ColorValues(saturation, contrast, brightness))
+                    black = max(0.0, min(1.0, matrix[20]))
+                    white = max(0.0, min(1.0, sum(matrix[row * 5] for row in range(3)) + matrix[20]))
+                    with self.subTest(saturation=saturation, contrast=contrast, brightness=brightness):
+                        self.assertGreaterEqual(white - black, 0.49)
+
     def test_only_whole_numbers_inside_control_limits_are_accepted(self):
-        for kwargs in ({"saturation": 301}, {"contrast": -1},
-                       {"brightness": 51}, {"saturation": 255.5}):
+        for kwargs in ({"saturation": 301}, {"contrast": 49},
+                       {"brightness": 21}, {"brightness": -21},
+                       {"saturation": 255.5}):
             with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
                 ColorValues(**kwargs)
 

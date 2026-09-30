@@ -17,8 +17,9 @@ Keep the complete folder path at 72 characters or fewer.
 
 USE
 
-The small square window has Saturation (0-300%), Contrast (0-200%), and
-Brightness (-50 to 50%) controls. Type an exact integer in each box above its
+The small square window has Saturation (0-300%), Contrast (50-200%), and
+Brightness (-20 to 20%) controls. Those latter limits avoid a uniformly black
+or white desktop if the app unexpectedly stops. Type an exact integer above its
 slider, use the one-unit arrows, or drag. Apply starts a 15-second preview;
 press Keep colors before it ends or the previous colors return automatically.
 Changing values does not alter the desktop until Apply or Update is pressed.
