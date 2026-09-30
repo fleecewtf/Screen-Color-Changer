@@ -1,0 +1,17 @@
+.venv/
+.runtime/
+.setup-temp/
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
+/build/
+/dist/
+setup.log
+*.lnk
+__pycache__/
+*.py[cod]
+*.tmp
+*.bak
+*.error.txt
+Thumbs.db
+Desktop.ini

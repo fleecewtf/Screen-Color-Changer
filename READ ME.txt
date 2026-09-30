@@ -1,0 +1,74 @@
+SCREEN COLOR CHANGER
+
+Compact local color-filter utility for 64-bit Windows. First prototype; not a
+published site download.
+
+INSTALL
+
+1. Keep Screen Color Changer.pyw, color_math.py, screen_backend.py,
+   Installer.bat, LICENSE, this file, and both requirements-win-*.txt files
+   together in one folder.
+2. Double-click Installer.bat.
+3. Press Y once to accept the Terms and bundled Tool License and approve setup.
+4. Leave the setup window open until every check passes.
+5. Double-click the Screen Color Changer shortcut created in the folder.
+
+Keep the complete folder path at 72 characters or fewer.
+
+USE
+
+The small square window has Saturation (0-300%), Contrast (0-200%), and
+Brightness (-50 to 50%) controls. Type an exact integer in each box above its
+slider, use the one-unit arrows, or drag. Apply starts a 15-second preview;
+press Keep colors before it ends or the previous colors return automatically.
+Changing values does not alter the desktop until Apply or Update is pressed.
+Disable restores the prior effect when its matrix still matches this app's
+last-applied matrix. Esc also disables while the window has focus. Reset
+returns the controls to defaults.
+Saved values do not auto-apply on startup. Closing attempts safe restoration.
+After an unexpected exit, the next launch can offer to restore prior colors
+if the recorded color matrix still matches. An external app applying an
+identical matrix cannot be distinguished by this comparison.
+
+LIMITATIONS
+
+The filter uses the Windows full-screen Magnification color matrix, not an
+NVIDIA setting or a display driver. Some HDR, protected-video, exclusive, or
+independent-flip game surfaces can bypass it. It can conflict with Windows
+Magnifier or other programs changing the same color effect. It does not select
+individual monitors.
+
+SETUP DETAILS
+
+Setup keeps official Python 3.14.7, pip, PySide6-Essentials 6.11.2, settings,
+and app files private to this folder. It needs internet for first setup or
+repair, but does not need administrator access, change PATH, or install global
+packages. Runtime archives and PyPI wheels are checked against pinned SHA-256
+hashes; a missing or changed selected dependency lock stops setup. Keep both
+architecture locks if moving between x64 and ARM64 computers. Run
+Installer.bat again to repair or after moving the
+complete folder. It compiles all three Python sources before package downloads
+and runs an offline self-test without changing the display before success.
+
+PRIVACY AND REMOVAL
+
+No account or telemetry is required. Saved values stay in this folder. Review
+setup.log before sharing because it can contain local folder paths. To remove
+the tool, disable or close it, then delete the extracted folder. No service,
+startup entry, or global runtime is installed.
+
+TROUBLESHOOTING
+
+If setup stops, the window names the failed check and shows a short "How to
+fix it" instruction; setup.log has the same guidance. Re-extract all files
+together if any source or requirements file is missing. If a filter does not
+appear in a game or HDR session, first try an ordinary SDR desktop window.
+
+LICENSE
+
+Copyright 2026 Fleece. This project is source-available, not open source.
+The bundled LICENSE permits an unmodified official release for lawful
+personal, non-commercial use. Modification and redistribution are prohibited.
+Third-party materials keep their own licenses.
+
+This project was made with AI.

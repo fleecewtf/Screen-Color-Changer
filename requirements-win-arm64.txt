@@ -1,0 +1,9 @@
+# Reviewed PyPI wheel allowlist for Windows CPython 3.14.7 (arm64).
+# Keep LF line endings. Includes the complete runtime dependency closure.
+# Generated/reviewed with scripts/Test-PipLocks.py; no source distributions.
+# https://pypi.org/pypi/pyside6-essentials/6.11.2/json
+# pyside6_essentials-6.11.2-cp310-abi3-win_arm64.whl
+pyside6-essentials==6.11.2 --hash=sha256:fadd75c5c20800d64dd0a586ea8cb337c5e630aa2246df0e5105738afa46e02c
+# https://pypi.org/pypi/shiboken6/6.11.2/json
+# shiboken6-6.11.2-cp310-abi3-win_arm64.whl
+shiboken6==6.11.2 --hash=sha256:97c49432488df958f0308736f3d15b6915d8826fc380af17bb4b9ec5c4a5e81b
