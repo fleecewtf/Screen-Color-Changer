@@ -1,7 +1,7 @@
 """Fleece Screen Color Changer — compact Windows desktop color prototype.
 
 The display is never changed on launch or during the installer self-test.
-Only an explicit Apply click activates Windows' full-screen color effect.
+Apply starts a preview; explicit recovery can restore a prior session's colors.
 """
 
 import ctypes
@@ -15,13 +15,14 @@ ROOT = Path(__file__).resolve().parent
 # Only this extracted tool folder is added for its two reviewed sibling modules.
 sys.path.insert(0, str(ROOT))
 
-from color_math import ColorValues, color_matrix, identity_matrix, matrices_match
+from color_math import ColorValues, color_matrix, gamma_ramp, identity_matrix, matrices_match
 from screen_backend import ScreenEffect, ScreenEffectError
 
 from PySide6.QtCore import QPoint, QSettings, Qt, QTimer
 from PySide6.QtGui import QKeySequence, QMouseEvent, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
+    QDoubleSpinBox,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -37,48 +38,49 @@ from PySide6.QtWidgets import (
 
 
 APP_NAME = "Screen Color Changer"
-APP_VERSION = "0.1.1"
-WINDOW_SIZE = 448
+APP_VERSION = "0.2.0"
+WINDOW_SIZE = 496
 SETTINGS_PATH = ROOT / ".runtime" / "settings.ini"
 RECOVERY_PATH = ROOT / ".runtime" / "color-recovery.json"
 MUTEX_NAME = "Local\\FleeceScreenColorChangerApp"
 
 
 STYLE = """
-QWidget { color: #f4f4f4; font: 12px 'Segoe UI'; }
-QFrame#windowFrame { background: #070707; border: 1px solid #282828; border-radius: 16px; }
-QFrame#titleBar { background: #070707; border: none; border-bottom: 1px solid #202020;
-                  border-top-left-radius: 16px; border-top-right-radius: 16px; }
-QLabel#windowTitle { color: #bcbcbc; font-weight: 600; font-size: 11px; }
+QWidget { color: #f5f5f5; font-family: 'Segoe UI'; font-size: 13px; }
+QFrame#windowFrame { background: #070707; border: 1px solid #252525; border-radius: 14px; }
+QFrame#titleBar { background: #070707; border: none; border-bottom: 1px solid #1c1c1c;
+                  border-top-left-radius: 14px; border-top-right-radius: 14px; }
+QLabel#windowTitle { color: #bdbdbd; font-weight: 600; font-size: 12px; }
 QPushButton#closeDot, QPushButton#minimizeDot { border: none; border-radius: 6px;
-    min-width: 12px; max-width: 12px; min-height: 12px; max-height: 12px; padding: 0; }
+    min-width: 13px; max-width: 13px; min-height: 13px; max-height: 13px; padding: 0; }
 QPushButton#closeDot { background: #ff5f57; }
 QPushButton#minimizeDot { background: #febc2e; }
-QLabel#eyebrow { color: #7c7c7c; font: 10px 'Cascadia Mono'; }
-QLabel#headline { color: #fafafa; font-size: 24px; font-weight: 700; }
-QLabel#subtitle { color: #929292; font-size: 11px; }
-QFrame#panel { background: #0d0d0d; border: 1px solid #252525; border-radius: 13px; }
-QLabel#controlLabel { color: #d2d2d2; font-size: 11px; font-weight: 600; }
+QLabel#headline { color: #f5f5f5; font-size: 18px; font-weight: 700; }
+QFrame#panel { background: #0d0d0d; border: 1px solid #242424; border-radius: 14px; }
+QLabel#controlLabel { color: #b8b8b8; font-size: 12px; font-weight: 600; }
 QSlider::groove:horizontal { background: #292929; border-radius: 3px; height: 6px; }
 QSlider::sub-page:horizontal { background: #e8e8e8; border-radius: 3px; }
 QSlider::handle:horizontal { background: #ffffff; border: 2px solid #111111;
                               border-radius: 9px; width: 18px; margin: -6px 0; }
 QSlider::handle:horizontal:hover { background: #dedede; }
-QSpinBox { background: #151515; border: 1px solid #343434; border-radius: 7px;
-           color: #f5f5f5; min-height: 23px; padding: 0 7px; font-weight: 600; }
-QSpinBox:focus { border-color: #f1f1f1; }
-QSpinBox::up-button, QSpinBox::down-button { width: 0px; border: none; }
+QSpinBox, QDoubleSpinBox { background: #0a0a0a; border: 1px solid #292929; border-radius: 8px;
+           color: #f5f5f5; min-height: 25px; max-height: 25px; padding: 0 8px; font-weight: 600;
+           selection-background-color: #ffffff; selection-color: #000000; }
+QSpinBox:focus, QDoubleSpinBox:focus { border-color: #ffffff; }
+QSpinBox::up-button, QSpinBox::down-button,
+QDoubleSpinBox::up-button, QDoubleSpinBox::down-button { width: 0px; border: none; }
 QPushButton#primary, QPushButton#secondary { border-radius: 9px; min-height: 36px;
-                                            font-weight: 700; padding: 0 12px; }
+                                            font-weight: 600; padding: 0 12px; }
 QPushButton#primary { background: #f6f6f6; color: #070707; border: 1px solid #f6f6f6; }
 QPushButton#primary:hover { background: #dddddd; }
-QPushButton#secondary { background: #151515; color: #dddddd; border: 1px solid #333333; }
+QPushButton#secondary { background: #151515; color: #dddddd; border: 1px solid #2b2b2b; }
 QPushButton#secondary:hover { background: #242424; }
 QPushButton#secondary:disabled { background: #111111; color: #666666; border-color: #242424; }
-QPushButton#reset { color: #9b9b9b; background: transparent; border: none; text-align: right; }
-QPushButton#reset:hover { color: #f0f0f0; }
-QLabel#status { color: #a1a1a1; font-size: 11px; }
-QLabel#limit { color: #777777; font-size: 10px; }
+QPushButton#reset { color: #bdbdbd; background: #151515; border: 1px solid #2b2b2b;
+                   min-height: 26px; max-height: 26px; border-radius: 8px; padding: 0 10px; font-size: 11px; }
+QPushButton#reset:hover { color: #f0f0f0; background: #1d1d1d; }
+QLabel#status { color: #8b8b8b; font-size: 12px; }
+QLabel#limit { color: #7a7a7a; font-size: 11px; }
 QMessageBox { background: #0d0d0d; }
 QMessageBox QPushButton { min-width: 68px; background: #202020; border: 1px solid #404040;
                           border-radius: 7px; padding: 6px; }
@@ -96,20 +98,22 @@ class TitleBar(QFrame):
         row.setContentsMargins(14, 0, 14, 0)
         row.setSpacing(8)
         spacer = QWidget()
-        spacer.setFixedWidth(32)
+        spacer.setFixedWidth(34)
         row.addWidget(spacer)
         row.addStretch()
-        title = QLabel("fleece  /  screen color")
+        title = QLabel(APP_NAME)
         title.setObjectName("windowTitle")
         row.addWidget(title)
         row.addStretch()
         minimize = QPushButton()
         minimize.setObjectName("minimizeDot")
+        minimize.setCursor(Qt.PointingHandCursor)
         minimize.setToolTip("Minimize")
         minimize.setAccessibleName("Minimize window")
         minimize.clicked.connect(window.showMinimized)
         close = QPushButton()
         close.setObjectName("closeDot")
+        close.setCursor(Qt.PointingHandCursor)
         close.setToolTip("Close and restore previous colors")
         close.setAccessibleName("Close and restore previous colors")
         close.clicked.connect(window.close)
@@ -128,43 +132,52 @@ class TitleBar(QFrame):
 
 
 class ExactControl(QWidget):
-    def __init__(self, title: str, minimum: int, maximum: int, default: int, parent=None):
+    def __init__(self, title: str, minimum: int, maximum: int, default: int,
+                 suffix: str = "%", scale: int = 1, parent=None):
         super().__init__(parent)
         self.setObjectName("exactControl")
         column = QVBoxLayout(self)
         column.setContentsMargins(0, 0, 0, 0)
-        column.setSpacing(3)
+        self.scale = scale
+        column.setSpacing(2)
         heading = QHBoxLayout()
         heading.setContentsMargins(0, 0, 0, 0)
         label = QLabel(title)
         label.setObjectName("controlLabel")
         heading.addWidget(label)
         heading.addStretch()
-        self.number = QSpinBox()
-        self.number.setRange(minimum, maximum)
-        self.number.setSuffix("%")
+        self.number = QDoubleSpinBox() if scale != 1 else QSpinBox()
+        if scale != 1:
+            self.number.setDecimals(2)
+            self.number.setSingleStep(1 / scale)
+            self.number.setRange(minimum / scale, maximum / scale)
+        else:
+            self.number.setRange(minimum, maximum)
+        self.number.setSuffix(suffix)
         self.number.setKeyboardTracking(False)
-        self.number.setFixedWidth(76)
-        self.number.setAccessibleName(f"{title} exact percentage")
-        self.number.setToolTip("Type a whole number, or press Up/Down for exact one-point changes")
+        self.number.setFixedWidth(82)
+        self.number.setAlignment(Qt.AlignCenter)
+        self.number.setAccessibleName(f"{title} exact value")
+        self.number.setToolTip("Type an exact value. Arrow keys change one step at a time.")
         heading.addWidget(self.number)
         column.addLayout(heading)
         self.slider = QSlider(Qt.Horizontal)
         self.slider.setRange(minimum, maximum)
+        self.slider.setFixedHeight(19)
         self.slider.setSingleStep(1)
         self.slider.setPageStep(1)
         self.slider.setAccessibleName(f"{title} slider")
         self.slider.setToolTip("Drag, or use Left/Right arrows for exact one-point changes")
         column.addWidget(self.slider)
-        self.slider.valueChanged.connect(self.number.setValue)
-        self.number.valueChanged.connect(self.slider.setValue)
-        self.number.setValue(default)
+        self.slider.valueChanged.connect(lambda value: self.number.setValue(value / scale if scale != 1 else value))
+        self.number.valueChanged.connect(lambda value: self.slider.setValue(int(round(value * scale))))
+        self.number.setValue(default / scale if scale != 1 else default)
 
     def value(self) -> int:
-        return self.number.value()
+        return self.slider.value()
 
     def set_value(self, value: int):
-        self.number.setValue(value)
+        self.number.setValue(value / self.scale if self.scale != 1 else value)
 
 
 class ColorWindow(QWidget):
@@ -183,6 +196,7 @@ class ColorWindow(QWidget):
         self._preview_values = None
         self._preview_can_confirm = False
         self._confirmed_values = None
+        self._loading_values = False
         self._settings = None
         if not testing:
             try:
@@ -200,6 +214,7 @@ class ColorWindow(QWidget):
         self._escape = QShortcut(QKeySequence(Qt.Key_Escape), self)
         self._escape.activated.connect(self._disable_clicked)
         QApplication.instance().setStyleSheet(STYLE)
+        QApplication.setWheelScrollLines(1)
         self._build_ui()
         self._restore_values()
         self._sync_state("Ready • Apply previews for 15 seconds")
@@ -220,74 +235,93 @@ class ColorWindow(QWidget):
         body = QWidget()
         page.addWidget(body)
         layout = QVBoxLayout(body)
-        layout.setContentsMargins(18, 14, 18, 14)
-        layout.setSpacing(9)
-        eyebrow = QLabel("DISPLAY  /  001")
-        eyebrow.setObjectName("eyebrow")
-        layout.addWidget(eyebrow)
-        headline = QLabel("Color, your way.")
-        headline.setObjectName("headline")
-        layout.addWidget(headline)
-        subtitle = QLabel("A tiny desktop color utility. No NVIDIA setup needed.")
-        subtitle.setObjectName("subtitle")
-        layout.addWidget(subtitle)
-
+        layout.setContentsMargins(18, 12, 18, 12)
+        layout.setSpacing(0)
         panel = QFrame()
         panel.setObjectName("panel")
         panel_layout = QVBoxLayout(panel)
-        panel_layout.setContentsMargins(15, 9, 15, 9)
+        panel_layout.setContentsMargins(16, 12, 16, 12)
         panel_layout.setSpacing(5)
-        self.saturation = ExactControl("Saturation", 0, 300, 100)
-        self.contrast = ExactControl("Contrast", 50, 200, 100)
+        header = QHBoxLayout()
+        headline = QLabel("Adjust display colors")
+        headline.setObjectName("headline")
+        header.addWidget(headline)
+        header.addStretch()
+        reset = QPushButton("Reset")
+        reset.setObjectName("reset")
+        reset.setCursor(Qt.PointingHandCursor)
+        reset.setAccessibleName("Reset all five values to neutral")
+        reset.clicked.connect(self._reset_values)
+        header.addWidget(reset)
+        panel_layout.addLayout(header)
+
+        self.saturation = ExactControl("Digital vibrance", 0, 300, 100)
+        self.saturation.setToolTip("100% keeps the original saturation. Higher values boost color intensity.")
+        self.hue = ExactControl("Hue", -180, 180, 0, suffix="°")
         self.brightness = ExactControl("Brightness", -20, 20, 0)
-        for control in (self.saturation, self.contrast, self.brightness):
+        self.contrast = ExactControl("Contrast", 50, 200, 100)
+        self.gamma = ExactControl("Gamma", 50, 200, 100, suffix="", scale=100)
+        self.gamma.setToolTip("1.00 is neutral. Gamma changes midtones on supported SDR displays.")
+        self._controls = {
+            "saturation": (self.saturation, 100),
+            "hue": (self.hue, 0),
+            "brightness": (self.brightness, 0),
+            "contrast": (self.contrast, 100),
+            "gamma": (self.gamma, 100),
+        }
+        for control, _default in self._controls.values():
             panel_layout.addWidget(control)
             control.number.valueChanged.connect(self._values_changed)
-        layout.addWidget(panel)
 
         actions = QHBoxLayout()
         actions.setSpacing(8)
         self.apply_button = QPushButton("Apply colors")
         self.apply_button.setObjectName("primary")
+        self.apply_button.setCursor(Qt.PointingHandCursor)
         self.apply_button.clicked.connect(self._apply_clicked)
         actions.addWidget(self.apply_button, 2)
         self.disable_button = QPushButton("Disable")
         self.disable_button.setObjectName("secondary")
+        self.disable_button.setCursor(Qt.PointingHandCursor)
         self.disable_button.clicked.connect(self._disable_clicked)
         actions.addWidget(self.disable_button, 1)
-        layout.addLayout(actions)
-
-        footer = QHBoxLayout()
+        panel_layout.addSpacing(3)
+        panel_layout.addLayout(actions)
         self.status_label = QLabel()
         self.status_label.setObjectName("status")
         self.status_label.setWordWrap(True)
-        footer.addWidget(self.status_label, 1)
-        reset = QPushButton("Reset values")
-        reset.setObjectName("reset")
-        reset.setAccessibleName("Reset all three values to neutral")
-        reset.clicked.connect(self._reset_values)
-        footer.addWidget(reset)
-        layout.addLayout(footer)
-        limit = QLabel("Desktop effect · some HDR / full-screen games may ignore it")
-        limit.setObjectName("limit")
-        layout.addWidget(limit)
+        self.status_label.setFixedHeight(30)
+        panel_layout.addWidget(self.status_label)
+        footer = QHBoxLayout()
+        note = QLabel("Esc restores colors")
+        note.setObjectName("limit")
+        note.setToolTip("Press Esc while this window has focus, or click Revert. Some HDR or full-screen games may bypass the filter.")
+        footer.addWidget(note)
+        footer.addStretch()
+        version = QLabel(f"Fleece • v{APP_VERSION} • local only")
+        version.setObjectName("limit")
+        footer.addWidget(version)
+        panel_layout.addLayout(footer)
+        layout.addWidget(panel)
 
     def values(self) -> ColorValues:
-        return ColorValues(self.saturation.value(), self.contrast.value(), self.brightness.value())
+        return ColorValues(saturation=self.saturation.value(), contrast=self.contrast.value(),
+                           brightness=self.brightness.value(), hue=self.hue.value(), gamma=self.gamma.value())
 
     def _restore_values(self):
         if self._settings is None:
             return
-        defaults = {"saturation": (self.saturation, 100),
-                    "contrast": (self.contrast, 100),
-                    "brightness": (self.brightness, 0)}
-        for key, (control, default) in defaults.items():
-            try:
-                value = int(self._settings.value(key, default))
-                if control.number.minimum() <= value <= control.number.maximum():
-                    control.set_value(value)
-            except (TypeError, ValueError):
-                pass
+        self._loading_values = True
+        try:
+            for key, (control, default) in self._controls.items():
+                try:
+                    value = int(self._settings.value(key, default))
+                    if control.slider.minimum() <= value <= control.slider.maximum():
+                        control.set_value(value)
+                except (TypeError, ValueError):
+                    pass
+        finally:
+            self._loading_values = False
 
     def _save_values(self):
         if self._settings is None:
@@ -312,6 +346,8 @@ class ColorWindow(QWidget):
             self.apply_button.setEnabled(not self._pending_recovery)
 
     def _values_changed(self, _value: int):
+        if self._loading_values:
+            return
         self._save_values()
         if self._preview_remaining is not None:
             self._sync_state("Values changed • preview new values or wait to revert")
@@ -353,7 +389,8 @@ class ColorWindow(QWidget):
             self._confirm_delay.start()
             self._sync_state("Preview • reverts in 15s unless kept")
         except (ScreenEffectError, OSError) as error:
-            self._sync_state("Could not apply these values; preview will revert")
+            self._sync_state("Could not apply these values; preview will revert" if
+                             self._preview_remaining is not None else "Could not apply these values")
             QMessageBox.warning(self, "Color effect unavailable", str(error))
 
     def _enable_keep_button(self):
@@ -378,10 +415,8 @@ class ColorWindow(QWidget):
         try:
             if self._confirmed_values is not None:
                 self.effect.apply(self._confirmed_values)
-                for control, value in ((self.saturation, self._confirmed_values.saturation),
-                                       (self.contrast, self._confirmed_values.contrast),
-                                       (self.brightness, self._confirmed_values.brightness)):
-                    control.set_value(value)
+                for key, (control, _default) in self._controls.items():
+                    control.set_value(getattr(self._confirmed_values, key))
                 message = "Preview ended • previous setting restored"
             else:
                 restored = self.effect.disable()
@@ -434,19 +469,18 @@ class ColorWindow(QWidget):
             message = ("Previous colors restored" if restored
                        else "Another app changed colors; its effect was left alone")
             self._sync_state(message)
-        except ScreenEffectError as error:
+        except (ScreenEffectError, OSError) as error:
             self._sync_state("Could not restore previous colors")
             QMessageBox.critical(self, "Restore failed", str(error))
 
     def _reset_values(self):
-        self.saturation.set_value(100)
-        self.contrast.set_value(100)
-        self.brightness.set_value(0)
+        for control, default in self._controls.values():
+            control.set_value(default)
 
     def closeEvent(self, event):
         try:
             restored = self.effect.disable()
-        except ScreenEffectError as error:
+        except (ScreenEffectError, OSError) as error:
             QMessageBox.critical(
                 self, "Colors could not be restored",
                 f"{error}\n\nThe window will stay open so you can retry Disable.",
@@ -491,26 +525,40 @@ def _self_test(folder: Path) -> int:
     assert window.saturation.number.value() == 254
     window.saturation.slider.setValue(255)
     assert window.saturation.number.value() == 255
-    assert window.saturation.slider.singleStep() == 1
-    assert window.saturation.slider.pageStep() == 1
-    # This fixed-size square still gives the 0..300 slider enough mouse travel
-    # to select every whole number (not just values reachable by typing).
-    slider = window.saturation.slider
-    option = QStyleOptionSlider()
-    option.initFrom(slider)
-    option.orientation = Qt.Horizontal
-    option.minimum = slider.minimum()
-    option.maximum = slider.maximum()
-    option.sliderPosition = slider.value()
-    option.sliderValue = slider.value()
-    style = slider.style()
-    groove = style.subControlRect(QStyle.CC_Slider, option, QStyle.SC_SliderGroove, slider)
-    handle = style.subControlRect(QStyle.CC_Slider, option, QStyle.SC_SliderHandle, slider)
-    travel = groove.width() - handle.width()
-    reachable = {QStyle.sliderValueFromPosition(0, 300, x, travel)
-                 for x in range(max(0, travel) + 1)}
-    assert set(range(301)) <= reachable
+    window.hue.number.setValue(179)
+    assert window.hue.value() == 179
+    window.gamma.number.setValue(1.03)
+    assert window.gamma.slider.value() == 103 and window.gamma.value() == 103
+    window.gamma.slider.setValue(104)
+    assert abs(window.gamma.number.value() - 1.04) < 1e-9
+    assert window.gamma.number.singleStep() == 0.01
+    # All five sliders have enough travel for each integer step, including
+    # every hue degree and each gamma hundredth, rather than mouse skips.
+    for control, _default in window._controls.values():
+        slider = control.slider
+        assert slider.singleStep() == 1 and slider.pageStep() == 1
+        option = QStyleOptionSlider()
+        option.initFrom(slider)
+        option.orientation = Qt.Horizontal
+        option.minimum = slider.minimum()
+        option.maximum = slider.maximum()
+        option.sliderPosition = slider.value()
+        option.sliderValue = slider.value()
+        style = slider.style()
+        groove = style.subControlRect(QStyle.CC_Slider, option, QStyle.SC_SliderGroove, slider)
+        handle = style.subControlRect(QStyle.CC_Slider, option, QStyle.SC_SliderHandle, slider)
+        travel = groove.width() - handle.width()
+        reachable = {QStyle.sliderValueFromPosition(slider.minimum(), slider.maximum(), x, travel)
+                     for x in range(max(0, travel) + 1)}
+        assert set(range(slider.minimum(), slider.maximum() + 1)) <= reachable
+    window._reset_values()
     assert matrices_match(color_matrix(ColorValues()), identity_matrix())
+    baseline_ramp = tuple(index * 257 for _channel in range(3) for index in range(256))
+    adjusted_ramp = gamma_ramp(baseline_ramp, 103)
+    assert adjusted_ramp != baseline_ramp
+    assert gamma_ramp(baseline_ramp, 100) == baseline_ramp
+    assert all(adjusted_ramp[start] == 0 and adjusted_ramp[start + 255] == 65535
+               for start in (0, 256, 512))
     assert not window.effect.active
 
     class FakeEffect:
@@ -546,9 +594,7 @@ def _self_test(folder: Path) -> int:
     assert fake.disabled == 1 and not fake.active
     assert window._preview_remaining is None
 
-    window.saturation.set_value(100)
-    window.contrast.set_value(100)
-    window.brightness.set_value(0)
+    window._reset_values()
     window._apply_clicked()
     window._enable_keep_button()
     window._apply_clicked()
@@ -561,7 +607,7 @@ def _self_test(folder: Path) -> int:
     assert window.saturation.value() == 100
     window.close()
     (folder / "self-test-passed.txt").write_text(
-        f"{APP_NAME} {APP_VERSION}: UI, exact values, and color matrix passed.\n",
+        f"{APP_NAME} {APP_VERSION}: five controls, exact values, color math, and preview restoration passed.\n",
         encoding="utf-8",
     )
     return 0

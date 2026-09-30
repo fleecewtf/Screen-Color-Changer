@@ -4,15 +4,16 @@ A compact, local color-filter utility for 64-bit Windows. This is a **first prot
 
 ## What it does
 
-- Uses a small 448 × 448 window rather than a full-size multi-page app.
-- Adjusts saturation (0–300%), contrast (50–200%), and brightness (−20–20%) with three sliders. The contrast/brightness limits avoid a uniformly black or white desktop even if the app stops unexpectedly.
-- Shows a synchronized numeric entry above each slider. Type any integer in range or use the one-unit arrow controls for exact values; dragging a slider does not limit the numbers you can enter.
+- Uses a small 496 × 496 window with the same title bar, inset panel, inputs, buttons, and typography as the other Fleece tools.
+- Includes Digital vibrance (0–300%, neutral 100%), Hue (−180–180°, neutral 0°), Brightness (−20–20%, neutral 0%), Contrast (50–200%, neutral 100%), and Gamma (0.50–2.00, neutral 1.00).
+- Shows a synchronized numeric entry above each slider. Percentage and hue controls move in single units; gamma moves in exact 0.01 steps. Each slider has enough travel to reach every step, including 255% and gamma 1.03.
 - Provides **Apply**, **Disable**, and **Reset**. Apply starts a 15-second preview; the prior colors return automatically unless you press **Keep colors**. Values are saved locally, but the filter is **not** applied automatically when the app starts.
-- Uses Windows' full-screen Magnification color matrix, independently of NVIDIA Control Panel. It does not install a display driver.
+- Uses Windows' full-screen Magnification color matrix for vibrance, hue, brightness, and contrast, independently of NVIDIA Control Panel. Digital vibrance is a saturation-based color-intensity control; its scale is not equivalent to NVIDIA's Digital Vibrance scale.
+- Uses a separate nonlinear gamma curve on supported SDR displays. It composes the curve with the saved display calibration, verifies the driver's response, and restores prior gamma when its current ramp still matches this app's applied ramp. Non-neutral gamma is rejected when HDR/advanced color is active, the display mode cannot be verified, or the driver does not apply it. Gamma 1.00 leaves the existing calibration alone.
 - Captures the previous color effect and restores it when disabled or closed **only if its own effect is still active**, to avoid overwriting another program's newer change.
 - If a session ends unexpectedly, the next launch offers to restore the previous colors when the recorded effect still matches. The safeguard compares color-matrix values, so an external program applying an identical matrix cannot be distinguished.
 
-The filter may not affect HDR content or games using independent-flip/exclusive display paths. It can conflict with Windows Magnifier or other programs changing the same Windows color effect. This version does not select individual monitors.
+The filter may not affect HDR content or games using independent-flip/exclusive display paths. It can conflict with Windows Magnifier or other programs changing the same Windows color effect or display calibration. This version applies to the desktop and does not select individual monitors. Gamma requires all active targets to be verified SDR; leave it at 1.00 if it is unavailable.
 
 ## Requirements
 
@@ -34,7 +35,7 @@ Run `Installer.bat` again to repair private components or after moving the compl
 
 ## Using it
 
-Type the exact value you want in the box above a slider, use its one-unit arrows, or drag the slider. Press **Apply** to preview the effect. It reverts after 15 seconds unless you press **Keep colors**; changing values after that starts another preview when you press **Update**. **Disable** restores the captured prior effect when its matrix still matches this app's last-applied matrix, and **Reset** returns the controls to their defaults. **Esc** disables the effect while the window has focus. Closing the app attempts the same safe restoration as Disable. The slider controls do not change the desktop until you press Apply or Update.
+Type the exact value you want in the box above a slider, use its arrow keys, or drag the slider. Gamma accepts two decimal places, so entering **1.03** selects exactly that setting. Press **Apply** to preview the effect. It reverts after 15 seconds unless you press **Keep colors**; changing values after that starts another preview when you press **Update**. **Disable** restores the captured prior effects when their current values still match this app's last-applied values, and **Reset** returns all five controls to their defaults. **Esc** disables the effect while the window has focus. Closing the app attempts the same safe restoration as Disable. The slider controls do not change the desktop until you press Apply or Update.
 
 ## Privacy and removal
 
@@ -47,6 +48,8 @@ To remove this prototype, first disable or close it, then delete the extracted f
 If setup stops, the window immediately names the failed check and shows a **How to fix it** instruction. The same guidance is saved in `setup.log`. Keep all three source files and both dependency locks with `Installer.bat`; a partial copy is not installable. Correct the issue and run setup again. Success is reported only after dependencies, offline self-tests, and the shortcut pass.
 
 If the filter does not appear in a particular game or HDR session, try a normal SDR desktop window first. If Windows Magnifier or another display filter is active, disable the conflicting feature before applying this one. Do not assume a game or protected video path will honor the Windows color matrix.
+
+If Gamma is unavailable, return it to **1.00** to use the other four controls. Gamma depends on SDR mode and display-driver support; a driver may reject or silently ignore a requested curve. The app checks the applied ramp and reports that case instead of claiming success.
 
 ## License
 

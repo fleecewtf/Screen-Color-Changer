@@ -17,10 +17,12 @@ Keep the complete folder path at 72 characters or fewer.
 
 USE
 
-The small square window has Saturation (0-300%), Contrast (50-200%), and
-Brightness (-20 to 20%) controls. Those latter limits avoid a uniformly black
-or white desktop if the app unexpectedly stops. Type an exact integer above its
-slider, use the one-unit arrows, or drag. Apply starts a 15-second preview;
+The compact 496 x 496 window uses the same UI style as the other Fleece tools.
+It has Digital vibrance (0-300%, neutral 100%), Hue (-180 to 180 degrees),
+Brightness (-20 to 20%, neutral 0%), Contrast (50-200%, neutral 100%), and
+Gamma (0.50 to 2.00, neutral 1.00). Type an exact value above each slider or
+use its arrow keys. Gamma moves in 0.01 steps, including 1.03. The other
+controls move one unit at a time. Apply starts a 15-second preview;
 press Keep colors before it ends or the previous colors return automatically.
 Changing values does not alter the desktop until Apply or Update is pressed.
 Disable restores the prior effect when its matrix still matches this app's
@@ -33,11 +35,15 @@ identical matrix cannot be distinguished by this comparison.
 
 LIMITATIONS
 
-The filter uses the Windows full-screen Magnification color matrix, not an
-NVIDIA setting or a display driver. Some HDR, protected-video, exclusive, or
-independent-flip game surfaces can bypass it. It can conflict with Windows
-Magnifier or other programs changing the same color effect. It does not select
-individual monitors.
+Vibrance, hue, brightness, and contrast use the Windows full-screen color
+matrix. Digital vibrance boosts saturation; its scale differs from NVIDIA's.
+Gamma uses a separate nonlinear curve composed with the saved calibration.
+Gamma requires verified SDR mode and a supported display driver. If it is
+unavailable, leave Gamma at 1.00 to use the other four controls. Readback checks
+reject a curve the driver ignored; the app does not claim it was applied.
+Some HDR, protected-video, exclusive, or independent-flip game surfaces can
+bypass the color effect. Windows Magnifier or other color-calibration apps can
+conflict with it. This version does not select individual monitors.
 
 SETUP DETAILS
 
