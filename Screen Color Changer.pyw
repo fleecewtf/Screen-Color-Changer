@@ -1,4 +1,4 @@
-"""Fleece Screen Color Changer — compact Windows desktop color prototype.
+"""Fleece Screen Color Changer — compact Windows desktop color utility.
 
 The display is never changed on launch or during the installer self-test.
 Controls preview live; only Apply saves values and confirms the current preview.
@@ -8,6 +8,7 @@ import ctypes
 import os
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 
@@ -16,10 +17,74 @@ ROOT = Path(__file__).resolve().parent
 # Only this extracted tool folder is added for its two reviewed sibling modules.
 sys.path.insert(0, str(ROOT))
 
+MUTEX_NAME = "Local\\FleeceScreenColorChangerApp"
+SETUP_GATE_NAME = "Local\\FleeceScreenColorChangerSetupGate"
+
+
+class AlreadyRunningError(RuntimeError):
+    """The named mutex belongs to the existing application, not this launch."""
+
+
+class SetupInProgressError(RuntimeError):
+    """Setup currently owns the short startup/repair exclusion gate."""
+
+
+def _single_instance_mutex():
+    if os.name != "nt":
+        return None
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.CreateMutexW.argtypes = (ctypes.c_void_p, ctypes.c_int, ctypes.c_wchar_p)
+    kernel.CreateMutexW.restype = ctypes.c_void_p
+    kernel.CloseHandle.argtypes = (ctypes.c_void_p,)
+    kernel.CloseHandle.restype = ctypes.c_int
+    kernel.WaitForSingleObject.argtypes = (ctypes.c_void_p, ctypes.c_uint32)
+    kernel.WaitForSingleObject.restype = ctypes.c_uint32
+    kernel.ReleaseMutex.argtypes = (ctypes.c_void_p,)
+    kernel.ReleaseMutex.restype = ctypes.c_int
+    gate = kernel.CreateMutexW(None, 0, SETUP_GATE_NAME)
+    if not gate:
+        raise OSError("Could not open the setup/startup lock")
+    owns_gate = False
+    try:
+        result = kernel.WaitForSingleObject(gate, 0)
+        if result == 258:
+            raise SetupInProgressError("Setup or repair is running. Wait for it to finish, then open the shortcut again.")
+        if result not in (0, 128):  # WAIT_OBJECT_0 / WAIT_ABANDONED
+            raise OSError("Could not verify the setup/startup lock")
+        owns_gate = True
+        handle = kernel.CreateMutexW(None, 1, MUTEX_NAME)
+        existed = ctypes.get_last_error() == 183
+        if not handle:
+            raise OSError("Could not create the single-instance lock")
+        if existed:
+            kernel.CloseHandle(handle)
+            raise AlreadyRunningError("Screen Color Changer is already open.")
+        return kernel, handle
+    finally:
+        if owns_gate:
+            kernel.ReleaseMutex(gate)
+        kernel.CloseHandle(gate)
+
+
+# Acquire before importing Qt or sibling application modules: a repair must
+# never replace their files while a new process is loading them. Imports made
+# by the isolated self-test and test harness deliberately do not take this lock.
+_startup_mutex = None
+_startup_already_running = False
+if __name__ == "__main__" and len(sys.argv) == 1:
+    try:
+        _startup_mutex = _single_instance_mutex()
+    except AlreadyRunningError:
+        _startup_already_running = True
+    except (RuntimeError, OSError) as error:
+        if os.name == "nt":
+            ctypes.WinDLL("user32").MessageBoxW(None, str(error), "Screen Color Changer", 0x30)
+        raise SystemExit(1)
+
 from color_math import ColorValues, color_matrix, gamma_ramp, identity_matrix, matrices_match
 from screen_backend import ScreenEffect, ScreenEffectError
 
-from PySide6.QtCore import QObject, QPoint, QSettings, Qt, QTimer
+from PySide6.QtCore import QObject, QPoint, QSettings, Qt, QTimer, Signal, Slot
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtGui import QAction, QColor, QIcon, QKeySequence, QMouseEvent, QPainter, QPixmap, QShortcut
 from PySide6.QtWidgets import (
@@ -32,6 +97,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSlider,
+    QScrollArea,
     QSpinBox,
     QStyle,
     QStyleOptionSlider,
@@ -42,11 +108,10 @@ from PySide6.QtWidgets import (
 
 
 APP_NAME = "Screen Color Changer"
-APP_VERSION = "0.3.1"
+APP_VERSION = "0.3.2"
 WINDOW_SIZE = 496
 SETTINGS_PATH = ROOT / ".runtime" / "settings.ini"
 RECOVERY_PATH = ROOT / ".runtime" / "color-recovery.json"
-MUTEX_NAME = "Local\\FleeceScreenColorChangerApp"
 LIVE_PREVIEW_INTERVAL_MS = 75
 PREVIEW_IDLE_SECONDS = 15
 IPC_OPEN_COMMAND = b"FLEECE_OPEN_SETTINGS_V1\n"
@@ -91,6 +156,10 @@ QPushButton#reset { color: #bdbdbd; background: #151515; border: 1px solid #2b2b
 QPushButton#reset:hover { color: #f0f0f0; background: #1d1d1d; }
 QLabel#status { color: #8b8b8b; font-size: 12px; }
 QLabel#limit { color: #7a7a7a; font-size: 11px; }
+QScrollArea { border: none; background: transparent; }
+QScrollBar:vertical { width: 8px; background: #0d0d0d; }
+QScrollBar:horizontal { height: 8px; background: #0d0d0d; }
+QScrollBar::handle { background: #444444; border-radius: 4px; min-height: 24px; min-width: 24px; }
 QMessageBox { background: #0d0d0d; }
 QMessageBox QPushButton { min-width: 68px; background: #202020; border: 1px solid #404040;
                           border-radius: 7px; padding: 6px; }
@@ -142,6 +211,8 @@ class TitleBar(QFrame):
 
 
 class ExactControl(QWidget):
+    inputActivity = Signal()
+
     def __init__(self, title: str, minimum: int, maximum: int, default: int,
                  suffix: str = "%", scale: int = 1, parent=None):
         super().__init__(parent)
@@ -165,6 +236,9 @@ class ExactControl(QWidget):
             self.number.setRange(minimum, maximum)
         self.number.setSuffix(suffix)
         self.number.setKeyboardTracking(False)
+        self._pending_text = False
+        self.number.lineEdit().textEdited.connect(self._text_edited)
+        self.number.editingFinished.connect(self._editing_finished)
         self.number.setFixedWidth(82)
         self.number.setAlignment(Qt.AlignCenter)
         self.number.setAccessibleName(f"{title} exact value")
@@ -183,15 +257,28 @@ class ExactControl(QWidget):
         self.number.valueChanged.connect(lambda value: self.slider.setValue(int(round(value * scale))))
         self.number.setValue(default / scale if scale != 1 else default)
 
+    def _text_edited(self, _text):
+        self._pending_text = True
+        self.inputActivity.emit()
+
+    def _editing_finished(self):
+        self._pending_text = False
+
     def value(self) -> int:
         return self.slider.value()
 
     def set_value(self, value: int):
+        self._pending_text = False
         self.number.setValue(value / self.scale if self.scale != 1 else value)
 
 
+class OperationBridge(QObject):
+    """Only completion notifications cross from the display thread to Qt."""
+    completed = Signal(object, object)
+
+
 class ColorWindow(QWidget):
-    def __init__(self, testing: bool = False, effect=None):
+    def __init__(self, testing: bool = False, effect=None, async_operations=None):
         super().__init__(None, Qt.Window | Qt.FramelessWindowHint)
         self.testing = testing
         self.effect = effect if effect is not None else ScreenEffect(
@@ -199,7 +286,20 @@ class ColorWindow(QWidget):
         )
         self.setWindowTitle(APP_NAME)
         self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setFixedSize(WINDOW_SIZE, WINDOW_SIZE)
+        self.resize(WINDOW_SIZE, WINDOW_SIZE)
+        self.setMaximumSize(WINDOW_SIZE, WINDOW_SIZE)
+        self._async_operations = not testing if async_operations is None else async_operations
+        self._executor = (ThreadPoolExecutor(max_workers=1, thread_name_prefix="Fleece-display")
+                          if self._async_operations else None)
+        self._operation_bridge = OperationBridge(self)
+        self._operation_bridge.completed.connect(self._operation_finished, Qt.QueuedConnection)
+        self._operation_epoch = 0
+        self._active_request = None
+        self._queued_request = None
+        self._worker_stopped = False
+        self._worker_values = None
+        self._close_ready = False
+        self._last_input = time.monotonic()
         self._warning_acknowledged = False
         self._pending_recovery = not testing
         self._preview_remaining = None
@@ -208,6 +308,7 @@ class ColorWindow(QWidget):
         self._loading_values = False
         self._preview_busy = False
         self._preview_paused = False
+        self._safety_restoring = False
         self._closing = False
         self._exit_requested = False
         self._tray = None
@@ -230,6 +331,7 @@ class ColorWindow(QWidget):
         QApplication.instance().setStyleSheet(STYLE)
         QApplication.setWheelScrollLines(1)
         self._build_ui()
+        self._fit_work_area()
         self._restore_values()
         self._saved_values = self.values()
         self._sync_state("Move a slider to preview • Apply saves")
@@ -242,15 +344,25 @@ class ColorWindow(QWidget):
     def _build_ui(self):
         frame = QFrame(self)
         frame.setObjectName("windowFrame")
-        frame.setFixedSize(WINDOW_SIZE, WINDOW_SIZE)
         self.frame = frame
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(frame)
         page = QVBoxLayout(frame)
         page.setContentsMargins(1, 1, 1, 1)
         page.setSpacing(0)
         page.addWidget(TitleBar(self))
 
         body = QWidget()
-        page.addWidget(body)
+        # Keep the full-size precision slider layout inside a scrollable body
+        # on smaller/high-DPI work areas rather than clipping bottom controls.
+        body.setMinimumWidth(WINDOW_SIZE - 2)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(body)
+        scroll.viewport().setStyleSheet("background: transparent;")
+        self.scroll_area = scroll
+        page.addWidget(scroll)
         layout = QVBoxLayout(body)
         layout.setContentsMargins(18, 12, 18, 12)
         layout.setSpacing(0)
@@ -291,6 +403,7 @@ class ColorWindow(QWidget):
         for control, _default in self._controls.values():
             panel_layout.addWidget(control)
             control.number.valueChanged.connect(self._values_changed)
+            control.inputActivity.connect(self._input_activity)
 
         actions = QHBoxLayout()
         actions.setSpacing(8)
@@ -309,12 +422,12 @@ class ColorWindow(QWidget):
         self.status_label = QLabel()
         self.status_label.setObjectName("status")
         self.status_label.setWordWrap(True)
-        self.status_label.setFixedHeight(30)
+        self.status_label.setMinimumHeight(30)
         panel_layout.addWidget(self.status_label)
         footer = QHBoxLayout()
         note = QLabel("Esc restores colors")
         note.setObjectName("limit")
-        note.setToolTip("Esc, Disable or closing restores the prior desktop colors. Only Apply saves values. Some HDR or full-screen games may bypass the filter.")
+        note.setToolTip("Esc, Disable and tray Exit restore prior desktop colors. Closing before Apply restores colors; after Apply, closing keeps them in the tray when available. Only Apply saves values. Some HDR or full-screen games may bypass the filter.")
         footer.addWidget(note)
         footer.addStretch()
         version = QLabel(f"Fleece • v{APP_VERSION} • local only")
@@ -322,6 +435,16 @@ class ColorWindow(QWidget):
         footer.addWidget(version)
         panel_layout.addLayout(footer)
         layout.addWidget(panel)
+
+    def _fit_work_area(self, available=None):
+        screen = self.screen() or QApplication.primaryScreen()
+        available = available if available is not None else screen.availableGeometry()
+        self.resize(min(WINDOW_SIZE, max(1, available.width())),
+                    min(WINDOW_SIZE, max(1, available.height())))
+        if self.isVisible():
+            position = self.pos()
+            self.move(max(available.left(), min(position.x(), available.right() - self.width() + 1)),
+                      max(available.top(), min(position.y(), available.bottom() - self.height() + 1)))
 
     def _build_tray(self):
         if not QSystemTrayIcon.isSystemTrayAvailable():
@@ -360,6 +483,7 @@ class ColorWindow(QWidget):
 
     def _show_from_tray(self):
         self.showNormal()
+        self._fit_work_area()
         self.raise_()
         self.activateWindow()
 
@@ -392,18 +516,20 @@ class ColorWindow(QWidget):
         finally:
             self._loading_values = False
 
-    def _save_values(self) -> bool:
+    def _save_values(self, values=None) -> bool:
         if self._settings is None:
             return False
-        for key, value in vars(self.values()).items():
+        for key, value in vars(values if values is not None else self.values()).items():
             self._settings.setValue(key, value)
         self._settings.sync()
         return self._settings.status() == QSettings.NoError
 
-    def _set_controls(self, values: ColorValues):
+    def _set_controls(self, values: ColorValues, preserve_edits=False):
         self._loading_values = True
         try:
             for key, (control, _default) in self._controls.items():
+                if preserve_edits and control._pending_text:
+                    continue
                 control.set_value(getattr(values, key))
         finally:
             self._loading_values = False
@@ -411,13 +537,19 @@ class ColorWindow(QWidget):
     def _sync_state(self, message: str):
         self.status_label.setText(message)
         self.reset_button.setEnabled(not self._pending_recovery)
-        self.disable_button.setEnabled(not self._pending_recovery and
-                                       (self.effect.active or self._live_timer.isActive()))
+        self.disable_button.setEnabled(not self._pending_recovery and not self._closing and
+                                       (self.effect.active or self._live_timer.isActive() or self._preview_busy))
         self.disable_button.setText("Revert now" if self._preview_remaining is not None else "Disable")
         confirmed = (self.effect.active and self.values() == self._confirmed_values
                      and self.values() == self._preview_values and not self._live_timer.isActive())
         self.apply_button.setText("Applied" if confirmed else "Apply colors")
-        self.apply_button.setEnabled(not self._pending_recovery and not self._preview_busy)
+        self.apply_button.setEnabled(not self._pending_recovery and not self._preview_busy
+                                     and not self._closing and not self._safety_restoring)
+        locked = self._closing or any(request is not None and request["kind"] in
+                                     ("disable", "reset", "timeout", "close")
+                                     for request in (self._active_request, self._queued_request))
+        for control, _default in self._controls.values():
+            control.setEnabled(not locked and not self._pending_recovery)
         close = self.findChild(QPushButton, "closeDot")
         if close is not None:
             close_text = ("Close to tray; discard unapplied edits" if self._tray is not None
@@ -425,8 +557,278 @@ class ColorWindow(QWidget):
             close.setToolTip(close_text)
             close.setAccessibleName(close_text)
 
+    def _input_activity(self):
+        if self._loading_values or self.testing or self._closing or self._preview_paused:
+            return
+        self._last_input = time.monotonic()
+        if self._preview_remaining is not None:
+            self._preview_remaining = PREVIEW_IDLE_SECONDS
+
+    def _operation_request(self, kind, values=None, explicit=False, barrier=False):
+        """One running operation and one replaceable pending operation, never a backlog."""
+        if self._worker_stopped:
+            return False
+        if barrier:
+            self._operation_epoch += 1
+            self._queued_request = None
+            self._live_timer.stop()
+        request = {"kind": kind, "values": values, "explicit": explicit,
+                   "epoch": self._operation_epoch, "previous": self._preview_values,
+                   "confirmed": self._confirmed_values, "ack": self._warning_acknowledged,
+                   "keep": self._tray is not None and self._confirmed_values is not None
+                           and not self._exit_requested}
+        if self._active_request is not None:
+            # Safety/explicit requests cannot be replaced by a later drag.
+            if kind == "preview" and self._queued_request is not None and self._queued_request["kind"] != "preview":
+                return False
+            self._queued_request = request
+            return True
+        self._start_operation(request)
+        return True
+
+    def _start_operation(self, request):
+        self._active_request = request
+        self._preview_busy = True
+        self._sync_state(self.status_label.text())
+        future = self._executor.submit(self._execute_operation, request)
+
+        def complete(done):
+            try:
+                result = done.result()
+            except Exception as error:
+                result = {"error": error, "active": self.effect.active}
+            try:
+                self._operation_bridge.completed.emit(request, result)
+            except RuntimeError:
+                pass  # OS shutdown can remove the Qt receiver before teardown.
+
+        future.add_done_callback(complete)
+
+    def _execute_operation(self, request):
+        """Every production display read/write runs on this single worker thread."""
+        kind, values = request["kind"], request["values"]
+        result = {}
+        try:
+            if kind in ("preview", "confirm"):
+                if not self.effect.active:
+                    self.effect.initialize()
+                    if self.effect.replaces_existing_effect and not request["ack"]:
+                        return {"permission": True, "active": self.effect.active}
+                if not self.effect.active or values != self._worker_values:
+                    self.effect.apply(values)
+                self.effect.verify_current(values)
+                self._worker_values = values
+                result["values"] = values
+            elif kind == "timeout":
+                confirmed = request["confirmed"]
+                if confirmed is not None:
+                    try:
+                        self.effect.apply(confirmed)
+                        self.effect.verify_current(confirmed)
+                        self._worker_values = confirmed
+                        result["values"] = confirmed
+                    except (ScreenEffectError, OSError):
+                        result["restored"] = self.effect.disable()
+                        self._worker_values = None
+                        result["lost_confirmation"] = True
+                else:
+                    result["restored"] = self.effect.disable()
+                    self._worker_values = None
+            elif kind in ("disable", "reset", "close"):
+                if kind == "close" and request["keep"]:
+                    try:
+                        confirmed = request["confirmed"]
+                        # Never infer what is on screen from a stale queued UI
+                        # snapshot: a preceding operation may have changed it.
+                        self.effect.apply(confirmed)
+                        self.effect.verify_current(confirmed)
+                        self._worker_values = confirmed
+                        result["values"] = confirmed
+                        result["kept"] = True
+                    except (ScreenEffectError, OSError):
+                        result["restored"] = self.effect.disable()
+                        self._worker_values = None
+                else:
+                    result["restored"] = self.effect.disable()
+                    self._worker_values = None
+            elif kind == "recovery_check":
+                result["needed"] = self.effect.recovery_needed()
+            elif kind == "recover":
+                self.effect.recover_previous(values)
+                result["restored"] = values
+            elif kind != "close_pending":
+                raise RuntimeError("Unknown display operation")
+        except Exception as error:
+            self._worker_values = None
+            result["error"] = error
+        result["active"] = self.effect.active
+        return result
+
+    @Slot(object, object)
+    def _operation_finished(self, request, result):
+        if self._active_request is not request:
+            return
+        self._active_request = None
+        self._preview_busy = False
+        if self._worker_stopped:
+            self._queued_request = None
+            return  # Final restoration already ran; never revive UI timers.
+        stale = request["epoch"] != self._operation_epoch
+        if not stale:
+            self._handle_operation_result(request, result)
+        # A modal confirmation may have allowed another Qt event to start the
+        # next operation already; never dispatch a second concurrent operation.
+        if self._active_request is None and self._queued_request is not None and not self._worker_stopped:
+            next_request, self._queued_request = self._queued_request, None
+            self._start_operation(next_request)
+        self._sync_state(self.status_label.text())
+
+    def _handle_operation_result(self, request, result):
+        kind = request["kind"]
+        error = result.get("error")
+        if error is not None:
+            if kind in ("recovery_check", "recover"):
+                self._sync_state(f"Recovery needs attention • {error}")
+                QMessageBox.critical(self, "Color recovery unavailable", str(error))
+                return
+            if result.get("active"):
+                # An unsafe partial write has priority over every later drag.
+                # Otherwise a continuous stream of failed previews can keep
+                # the serialized worker busy and starve its safety timer.
+                self._preview_paused = True
+                self._safety_restoring = True
+                self._live_timer.stop()
+                if self._queued_request is not None and self._queued_request["kind"] in ("preview", "confirm"):
+                    self._queued_request = None
+                if kind == "close":
+                    # A partially restored profile is no longer an Applied
+                    # profile. The watchdog must restore its baseline, not
+                    # reapply the profile that the user was trying to exit.
+                    self._confirmed_values = None
+                self._preview_remaining = 1
+                self._preview_timer.start()
+            if kind == "close":
+                self._closing = False
+                self._exit_requested = False
+                self._sync_state(f"Restore failed • retry Disable • {error}")
+                QMessageBox.critical(self, "Colors could not be restored",
+                                     f"{error}\n\nThe window will stay open so you can retry Disable.")
+            else:
+                self._sync_state(f"{'Preview unavailable' if kind in ('preview', 'confirm') else 'Restore failed'} • {error}")
+            # Busy is cleared before any nested dialog loop, so safety timers
+            # can restore a failed filter even while this warning stays open.
+            if kind == "confirm":
+                QMessageBox.warning(self, "Color effect unavailable", str(error))
+            return
+        if result.get("permission"):
+            choice = QMessageBox.question(
+                self, "Existing desktop color effect",
+                "Another Windows color effect is already active. Live preview will temporarily replace it. "
+                "Disable, Reset or Exit restores it when this app still owns it. Applied colors can keep running "
+                "in the tray. Continue?", QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            # A close/reset can happen during the nested dialog event loop.
+            if self._closing or request["epoch"] != self._operation_epoch:
+                return
+            if choice != QMessageBox.Yes:
+                self._preview_paused = True
+                self._operation_request("disable", barrier=True)
+                self._sync_state("Live preview paused • existing effect left alone")
+            else:
+                self._warning_acknowledged = True
+                self._operation_request(kind, request["values"], request["explicit"])
+            return
+        if kind == "recovery_check":
+            if result["needed"]:
+                choice = QMessageBox.question(self, "Restore previous desktop colors?",
+                    "A previous session may have ended while its color effect was active. Restore the colors "
+                    "that were in place before it?", QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+                if not self._closing:
+                    self._operation_request("recover", choice == QMessageBox.Yes)
+                return
+            self._pending_recovery = False
+            self._sync_state("Move a slider to preview • Apply saves")
+            return
+        if kind == "recover":
+            self._pending_recovery = False
+            self._sync_state("Previous colors restored" if result["restored"] else "Previous effect left as you chose")
+            return
+        if kind in ("preview", "confirm"):
+            shown = result["values"]
+            self._preview_values = shown
+            if kind == "confirm":
+                self._confirmed_values = shown
+                saved = self._save_values(shown)
+                if saved:
+                    self._saved_values = shown
+                self._stop_preview()
+                if self._tray is not None:
+                    self._tray.show()
+                self._sync_state("Applied • saved locally • close keeps in tray" if saved and self._tray is not None else
+                                 "Applied • saved locally • close restores desktop" if saved else
+                                 "Applied • settings could not be saved locally")
+                # Edits made while confirmation was running remain unconfirmed
+                # and must still be rendered, not saved as the clicked profile.
+                if self.values() != shown and not self._closing:
+                    self._operation_request("preview", self.values())
+            elif shown == self._confirmed_values:
+                self._stop_preview()
+                self._sync_state("Applied values restored • close keeps in tray" if self._tray is not None else
+                                 "Applied values restored • close restores desktop")
+            else:
+                self._preview_remaining = PREVIEW_IDLE_SECONDS
+                self._preview_timer.start()
+                self._sync_state("Live preview • Apply saves • reverts after 15s idle")
+            return
+        if kind == "close" and result.get("kept"):
+            self._safety_restoring = False
+            self._set_controls(result["values"])
+            self._preview_values = result["values"]
+            self._stop_preview()
+            self._sync_state("Applied colors running in tray • Exit restores original colors")
+            self.hide()
+            self._closing = False
+            return
+        if kind in ("close", "close_pending"):
+            self._safety_restoring = False
+            self._stop_preview(clear_values=True)
+            self._confirmed_values = None
+            if self._tray is not None:
+                self._tray.hide()
+            self._close_ready = True
+            self.close()
+            if self._tray is not None:
+                QApplication.instance().quit()
+            return
+        self._stop_preview(clear_values=True)
+        self._safety_restoring = False
+        if kind == "timeout" and result.get("values") is not None:
+            self._preview_values = result["values"]
+            self._set_controls(result["values"], preserve_edits=True)
+            self._sync_state("Preview ended • last applied values restored")
+            return
+        self._confirmed_values = None
+        if self._tray is not None:
+            self._tray.hide()
+        if kind == "reset":
+            self._preview_paused = False
+            self._set_controls(ColorValues())
+            self._saved_values = ColorValues()
+            saved = self._save_values()
+            self._sync_state("Reset • prior desktop colors restored" if result.get("restored") and saved else
+                             "Reset • settings could not be saved" if result.get("restored") else
+                             "Reset • another app's color effect was left alone")
+        else:
+            self._set_controls(self._saved_values, preserve_edits=kind == "timeout")
+            self._sync_state("Previous colors restored" if result.get("restored") else
+                             "Another app changed colors; its effect was left alone")
+
     def _values_changed(self, _value: int):
         if self._loading_values or self.testing or self._pending_recovery or self._closing:
+            return
+        self._input_activity()
+        if self._preview_paused:
+            self._sync_state("Safety restoration in progress • Apply is available after it finishes" if self._safety_restoring else
+                             "Live preview paused • Apply to try again")
             return
         if self._preview_remaining is not None:
             self._preview_remaining = PREVIEW_IDLE_SECONDS
@@ -437,9 +839,17 @@ class ColorWindow(QWidget):
         self._sync_state("Updating live preview • Apply saves")
 
     def _apply_clicked(self):
-        if self.testing or self._pending_recovery:
+        if self.testing or self._pending_recovery or self._closing:
+            return
+        if self._safety_restoring:
+            self._sync_state("Safety restoration in progress • Apply is available after it finishes")
             return
         self._preview_paused = False
+        if self._async_operations:
+            self._live_timer.stop()
+            self._operation_request("confirm", self.values(), explicit=True)
+            self._sync_state("Applying and verifying colors • please wait")
+            return
         # Flush a queued change before confirming so Apply can never save an
         # older rendered value while newer slider values are still pending.
         if not self._render_live_preview(explicit=True):
@@ -463,10 +873,15 @@ class ColorWindow(QWidget):
 
     def _render_live_preview(self, explicit: bool = False) -> bool:
         self._live_timer.stop()
-        if self.testing or self._pending_recovery or self._closing or self._preview_busy:
+        if self.testing or self._pending_recovery or self._closing:
             return False
         if self._preview_paused:
-            self._sync_state("Live preview paused • Apply to try again")
+            self._sync_state("Safety restoration in progress • Apply is available after it finishes" if self._safety_restoring else
+                             "Live preview paused • Apply to try again")
+            return False
+        if self._async_operations:
+            return self._operation_request("confirm" if explicit else "preview", self.values(), explicit)
+        if self._preview_busy:
             return False
         values = self.values()
         self._preview_busy = True
@@ -496,7 +911,8 @@ class ColorWindow(QWidget):
             self._preview_values = values
             if values == self._confirmed_values:
                 self._stop_preview()
-                message = "Applied values restored • close restores desktop"
+                message = ("Applied values restored • close keeps in tray" if self._tray is not None else
+                           "Applied values restored • close restores desktop")
             else:
                 self._preview_remaining = PREVIEW_IDLE_SECONDS
                 self._preview_timer.start()
@@ -505,9 +921,23 @@ class ColorWindow(QWidget):
             return True
         except (ScreenEffectError, OSError) as error:
             # Inline feedback avoids repeated modal dialogs during a drag.
+            if self.effect.active and self._preview_remaining is None:
+                # The first preview can partially mutate a display before a
+                # driver/persistence failure also blocks rollback. It needs
+                # the same automatic safety restoration as a valid preview,
+                # even though no successful preview values were recorded.
+                self._preview_remaining = 1
+                self._preview_timer.start()
+            if self.effect.active:
+                self._preview_paused = True
+                self._safety_restoring = True
+                self._live_timer.stop()
+                self._preview_remaining = 1
+                self._preview_timer.start()
             self.status_label.setText(f"Preview unavailable • {error}")
             self.status_label.setToolTip(str(error))
             if explicit:
+                self._preview_busy = False
                 QMessageBox.warning(self, "Color effect unavailable", str(error))
             return False
         finally:
@@ -530,19 +960,24 @@ class ColorWindow(QWidget):
         if self._preview_remaining > 0:
             self._sync_state(f"Live preview • Apply saves • reverts in {self._preview_remaining}s")
             return
+        if self._async_operations:
+            self._operation_request("timeout", barrier=True)
+            self._sync_state("Restoring colors • please wait")
+            return
         try:
             if self._confirmed_values is not None:
                 self.effect.apply(self._confirmed_values)
-                self._set_controls(self._confirmed_values)
+                self._set_controls(self._confirmed_values, preserve_edits=True)
                 self._preview_values = self._confirmed_values
                 message = "Preview ended • last applied values restored"
             else:
                 restored = self.effect.disable()
-                self._set_controls(self._saved_values)
+                self._set_controls(self._saved_values, preserve_edits=True)
                 self._preview_values = None
                 message = ("Preview ended • prior colors restored" if restored else
                            "Another app changed colors; its effect was left alone")
             self._stop_preview()
+            self._safety_restoring = False
             self._sync_state(message)
         except (ScreenEffectError, OSError):
             if self._confirmed_values is not None:
@@ -551,6 +986,7 @@ class ColorWindow(QWidget):
                     self._confirmed_values = None
                     self._set_controls(self._saved_values)
                     self._stop_preview(clear_values=True)
+                    self._safety_restoring = False
                     self._sync_state("Preview ended • prior colors restored" if restored else
                                      "Another app changed colors; its effect was left alone")
                     return
@@ -562,6 +998,10 @@ class ColorWindow(QWidget):
             self._sync_state("Restore failed • retrying automatically")
 
     def _offer_recovery(self):
+        if self._async_operations:
+            self._operation_request("recovery_check")
+            self._sync_state("Checking previous color session • please wait")
+            return
         try:
             if self.effect.recovery_needed():
                 choice = QMessageBox.question(
@@ -583,12 +1023,17 @@ class ColorWindow(QWidget):
         self._sync_state("Move a slider to preview • Apply saves")
 
     def _disable_clicked(self):
-        if self._pending_recovery:
+        if self._pending_recovery or self._closing:
             return
         self._live_timer.stop()
+        if self._async_operations:
+            self._operation_request("disable", barrier=True)
+            self._sync_state("Restoring previous colors • please wait")
+            return
         try:
             restored = self.effect.disable()
             self._stop_preview(clear_values=True)
+            self._safety_restoring = False
             self._confirmed_values = None
             if self._tray is not None:
                 self._tray.hide()
@@ -601,9 +1046,13 @@ class ColorWindow(QWidget):
             QMessageBox.critical(self, "Restore failed", str(error))
 
     def _reset_values(self):
-        if self._pending_recovery:
+        if self._pending_recovery or self._closing:
             return
         self._live_timer.stop()
+        if self._async_operations:
+            self._operation_request("reset", barrier=True)
+            self._sync_state("Resetting colors • please wait")
+            return
         try:
             restored = self.effect.disable()
         except (ScreenEffectError, OSError) as error:
@@ -612,6 +1061,7 @@ class ColorWindow(QWidget):
                 QMessageBox.critical(self, "Reset failed", str(error))
             return
         self._stop_preview(clear_values=True)
+        self._safety_restoring = False
         self._confirmed_values = None
         self._preview_paused = False
         self._set_controls(ColorValues())
@@ -624,6 +1074,18 @@ class ColorWindow(QWidget):
                          "Reset • another app's color effect was left alone")
 
     def closeEvent(self, event):
+        if self._async_operations:
+            if self._close_ready:
+                event.accept()
+                return
+            event.ignore()
+            if self._closing:
+                return
+            self._closing = True
+            self._live_timer.stop()
+            self._operation_request("close_pending" if self._pending_recovery else "close", barrier=True)
+            self._sync_state("Finishing color restoration • please wait")
+            return
         self._closing = True
         self._live_timer.stop()
         if self._pending_recovery:
@@ -657,13 +1119,19 @@ class ColorWindow(QWidget):
         try:
             restored = self.effect.disable()
         except (ScreenEffectError, OSError) as error:
+            self._closing = False
+            self._exit_requested = False
+            if self.effect.active:
+                self._preview_paused = True
+                self._safety_restoring = True
+                self._confirmed_values = None
+                self._preview_remaining = 1
+                self._preview_timer.start()
             QMessageBox.critical(
                 self, "Colors could not be restored",
                 f"{error}\n\nThe window will stay open so you can retry Disable.",
             )
             event.ignore()
-            self._closing = False
-            self._exit_requested = False
             return
         if not restored:
             self.status_label.setText("Another app now controls the color effect")
@@ -675,6 +1143,9 @@ class ColorWindow(QWidget):
         event.accept()
 
     def _cleanup_on_quit(self):
+        if self._async_operations:
+            self._shutdown_worker(wait=False)
+            return
         if self._pending_recovery:
             return
         try:
@@ -684,9 +1155,25 @@ class ColorWindow(QWidget):
             # shutdown cannot keep this window open; next launch offers repair.
             pass
 
-
-class AlreadyRunningError(RuntimeError):
-    """The named mutex belongs to the existing application, not this launch."""
+    def _shutdown_worker(self, wait=True):
+        """Final restoration is ordered after in-flight writes on their owning thread."""
+        if self._executor is None:
+            return
+        if not self._worker_stopped:
+            self._worker_stopped = True
+            self._operation_epoch += 1
+            self._closing = True
+            self._queued_request = None
+            self._stop_preview(clear_values=True)
+            if not self._pending_recovery:
+                def restore_before_exit():
+                    try:
+                        self.effect.disable()
+                    except Exception:
+                        # Backend preserves unresolved ownership/recovery data.
+                        pass
+                self._executor.submit(restore_before_exit)
+        self._executor.shutdown(wait=wait)
 
 
 def _instance_ipc_name():
@@ -801,23 +1288,6 @@ def _request_existing_window(server_name=None):
         return False
     finally:
         socket.abort()
-
-
-def _single_instance_mutex():
-    if os.name != "nt":
-        return None
-    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel.CreateMutexW.argtypes = (ctypes.c_void_p, ctypes.c_int, ctypes.c_wchar_p)
-    kernel.CreateMutexW.restype = ctypes.c_void_p
-    kernel.CloseHandle.argtypes = (ctypes.c_void_p,)
-    kernel.CloseHandle.restype = ctypes.c_int
-    handle = kernel.CreateMutexW(None, 1, MUTEX_NAME)
-    if not handle:
-        raise OSError("Could not create the single-instance lock")
-    if ctypes.get_last_error() == 183:
-        kernel.CloseHandle(handle)
-        raise AlreadyRunningError("Screen Color Changer is already open.")
-    return kernel, handle
 
 
 def _self_test(folder: Path) -> int:
@@ -953,9 +1423,12 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(APP_VERSION)
-    mutex = None
+    mutex = _startup_mutex
     try:
-        mutex = _single_instance_mutex()
+        if _startup_already_running:
+            raise AlreadyRunningError("Screen Color Changer is already open.")
+        if mutex is None:
+            mutex = _single_instance_mutex()
     except AlreadyRunningError:
         try:
             if _request_existing_window():
@@ -971,6 +1444,7 @@ def main() -> int:
         QMessageBox.warning(None, APP_NAME, str(error))
         return 1
     reopener = None
+    window = None
     try:
         window = ColorWindow()
         reopener = InstanceReopener(window)
@@ -981,6 +1455,8 @@ def main() -> int:
         QMessageBox.warning(None, APP_NAME, str(error))
         return 1
     finally:
+        if window is not None:
+            window._shutdown_worker()
         if reopener is not None:
             reopener.close()
         if mutex is not None:

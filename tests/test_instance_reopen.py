@@ -2,6 +2,7 @@
 
 import importlib.machinery
 import importlib.util
+import ctypes
 import os
 import subprocess
 import sys
@@ -174,6 +175,120 @@ raise SystemExit(0 if ui._request_existing_window(sys.argv[2]) else 1)
             self.assertEqual(self.ui.main(), 0)
         channel.close.assert_called_once()
         kernel.CloseHandle.assert_called_once_with(123)
+
+
+@unittest.skipUnless(os.name == "nt", "Windows startup/setup exclusion")
+class StartupSetupGateTests(unittest.TestCase):
+    """Exercise gate ownership without loading any Windows display API."""
+
+    @classmethod
+    def setUpClass(cls):
+        loader = importlib.machinery.SourceFileLoader("color_gate_tests", str(ROOT / "Screen Color Changer.pyw"))
+        spec = importlib.util.spec_from_loader(loader.name, loader)
+        cls.ui = importlib.util.module_from_spec(spec)
+        loader.exec_module(cls.ui)
+
+    def kernel(self, wait=0, handles=(101, 202)):
+        kernel = Mock()
+        kernel.CreateMutexW.side_effect = handles
+        kernel.WaitForSingleObject.return_value = wait
+        kernel.ReleaseMutex.return_value = 1
+        kernel.CloseHandle.return_value = 1
+        return kernel
+
+    def test_busy_setup_rejects_before_creating_app_mutex_and_never_releases_unowned_gate(self):
+        kernel = self.kernel(wait=258)
+        with patch.object(self.ui.ctypes, "WinDLL", return_value=kernel):
+            with self.assertRaises(self.ui.SetupInProgressError):
+                self.ui._single_instance_mutex()
+        kernel.CreateMutexW.assert_called_once_with(None, 0, self.ui.SETUP_GATE_NAME)
+        kernel.WaitForSingleObject.assert_called_once_with(101, 0)
+        kernel.ReleaseMutex.assert_not_called()
+        kernel.CloseHandle.assert_called_once_with(101)
+
+    def test_available_or_abandoned_gate_is_released_after_app_mutex_is_created(self):
+        for wait in (0, 128):
+            with self.subTest(wait=wait):
+                kernel = self.kernel(wait=wait)
+                with patch.object(self.ui.ctypes, "WinDLL", return_value=kernel), \
+                     patch.object(self.ui.ctypes, "get_last_error", return_value=0):
+                    self.assertEqual(self.ui._single_instance_mutex(), (kernel, 202))
+                self.assertEqual(kernel.CreateMutexW.call_args_list[-1].args, (None, 1, self.ui.MUTEX_NAME))
+                kernel.ReleaseMutex.assert_called_once_with(101)
+                kernel.CloseHandle.assert_called_once_with(101)
+
+    def test_secondary_instance_releases_gate_and_its_duplicate_app_handle(self):
+        kernel = self.kernel()
+        with patch.object(self.ui.ctypes, "WinDLL", return_value=kernel), \
+             patch.object(self.ui.ctypes, "get_last_error", return_value=183):
+            with self.assertRaises(self.ui.AlreadyRunningError):
+                self.ui._single_instance_mutex()
+        self.assertEqual([call.args[0] for call in kernel.CloseHandle.call_args_list], [202, 101])
+        kernel.ReleaseMutex.assert_called_once_with(101)
+
+    def test_failed_gate_wait_does_not_create_app_mutex_or_claim_gate(self):
+        kernel = self.kernel(wait=0xffffffff)
+        with patch.object(self.ui.ctypes, "WinDLL", return_value=kernel):
+            with self.assertRaises(OSError):
+                self.ui._single_instance_mutex()
+        kernel.CreateMutexW.assert_called_once()
+        kernel.ReleaseMutex.assert_not_called()
+        kernel.CloseHandle.assert_called_once_with(101)
+
+    def test_failed_app_mutex_creation_still_releases_owned_setup_gate(self):
+        kernel = self.kernel(handles=(101, 0))
+        with patch.object(self.ui.ctypes, "WinDLL", return_value=kernel), \
+             patch.object(self.ui.ctypes, "get_last_error", return_value=0):
+            with self.assertRaises(OSError):
+                self.ui._single_instance_mutex()
+        kernel.ReleaseMutex.assert_called_once_with(101)
+        kernel.CloseHandle.assert_called_once_with(101)
+
+    def test_real_gate_owned_by_another_thread_blocks_startup_then_allows_it(self):
+        # Private random names avoid the running app and production installer.
+        import threading
+        gate_name = "Local\\FleeceAuditSetupGate-" + uuid.uuid4().hex
+        app_name = "Local\\FleeceAuditApp-" + uuid.uuid4().hex
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.CreateMutexW.argtypes = (ctypes.c_void_p, ctypes.c_int, ctypes.c_wchar_p)
+        kernel.CreateMutexW.restype = ctypes.c_void_p
+        kernel.ReleaseMutex.argtypes = (ctypes.c_void_p,)
+        kernel.ReleaseMutex.restype = ctypes.c_int
+        kernel.CloseHandle.argtypes = (ctypes.c_void_p,)
+        kernel.CloseHandle.restype = ctypes.c_int
+        acquired, release = threading.Event(), threading.Event()
+        errors = []
+
+        def hold_gate():
+            handle = kernel.CreateMutexW(None, 1, gate_name)
+            if not handle:
+                errors.append("Cannot create isolated gate")
+                acquired.set()
+                return
+            acquired.set()
+            try:
+                release.wait(5)
+            finally:
+                kernel.ReleaseMutex(handle)
+                kernel.CloseHandle(handle)
+
+        holder = threading.Thread(target=hold_gate, daemon=True)
+        holder.start()
+        try:
+            self.assertTrue(acquired.wait(3), "Gate fixture did not become ready")
+            self.assertEqual(errors, [])
+            with patch.object(self.ui, "SETUP_GATE_NAME", gate_name), patch.object(self.ui, "MUTEX_NAME", app_name):
+                with self.assertRaises(self.ui.SetupInProgressError):
+                    self.ui._single_instance_mutex()
+                release.set()
+                holder.join(timeout=3)
+                self.assertFalse(holder.is_alive())
+                api, handle = self.ui._single_instance_mutex()
+                api.ReleaseMutex(handle)
+                api.CloseHandle(handle)
+        finally:
+            release.set()
+            holder.join(timeout=3)
 
 
 if __name__ == "__main__":

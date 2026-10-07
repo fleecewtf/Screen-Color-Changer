@@ -1,3 +1,4 @@
+#requires -Version 5.1
 param(
     [Parameter(Mandatory = $true)]
     [string]$ReleaseRoot
@@ -75,6 +76,10 @@ $trustedPowerShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\
 $priorLock = $env:PIP_REQUIREMENTS
 $priorDigest = $env:PIP_REQUIREMENTS_SHA256
 try {
+    # Native stderr is represented as ErrorRecord in Windows PowerShell 5.1.
+    # Capture an expected negative result instead of aborting before checking it.
+    $priorNativePreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
     $env:PIP_REQUIREMENTS_SHA256 = $digestMatch.Groups['hash'].Value
     $positiveLock = New-Fixture 'positive lock'
     $env:PIP_REQUIREMENTS = Join-Path $positiveLock $selectedLock
@@ -88,6 +93,7 @@ try {
         throw "The actual early hash check failed to reject altered lock content correctly.`n$output"
     }
 } finally {
+    $ErrorActionPreference = $priorNativePreference
     if ($null -eq $priorLock) { Remove-Item Env:PIP_REQUIREMENTS -ErrorAction SilentlyContinue } else { $env:PIP_REQUIREMENTS = $priorLock }
     if ($null -eq $priorDigest) { Remove-Item Env:PIP_REQUIREMENTS_SHA256 -ErrorAction SilentlyContinue } else { $env:PIP_REQUIREMENTS_SHA256 = $priorDigest }
 }

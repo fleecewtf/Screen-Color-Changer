@@ -11,11 +11,32 @@ import os
 import uuid
 from pathlib import Path
 
-from color_math import color_matrix, gamma_ramp, identity_matrix, matrices_match
+from color_math import color_matrix, gamma_ramp, identity_matrix
 
 
 Effect = ctypes.c_float * 25
 GammaRamp = ctypes.c_uint16 * 768
+MAX_RECOVERY_BYTES = 8 * 1024 * 1024
+
+
+def _finite_windows_matrix(matrix):
+    try:
+        return len(matrix) == 25 and all(
+            type(value) in (int, float) and math.isfinite(value)
+            and math.isfinite(ctypes.c_float(value).value) for value in matrix
+        )
+    except (TypeError, ValueError, OverflowError):
+        return False
+
+
+def _windows_matrices_match(left, right):
+    """Compare the actual FLOAT values accepted by Windows, without an epsilon.
+
+    Python calculates in double precision, while MAGCOLOREFFECT stores float32.
+    Canonicalizing both sides preserves legitimate conversion rounding without
+    claiming another program's merely similar (but different) matrix as ours.
+    """
+    return len(left) == len(right) == 25 and tuple(Effect(*left)) == tuple(Effect(*right))
 
 
 class ScreenEffectError(RuntimeError):
@@ -44,10 +65,34 @@ class _PathInfo(ctypes.Structure):
     _fields_ = [("source", _SourceInfo), ("target", _TargetInfo), ("flags", ctypes.c_uint32)]
 
 
+class _Point(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_int32), ("y", ctypes.c_int32)]
+
+
+class _Region(ctypes.Structure):
+    _fields_ = [("width", ctypes.c_uint32), ("height", ctypes.c_uint32)]
+
+
+class _Rational(ctypes.Structure):
+    _fields_ = [("numerator", ctypes.c_uint32), ("denominator", ctypes.c_uint32)]
+
+
+class _SourceMode(ctypes.Structure):
+    _fields_ = [("width", ctypes.c_uint32), ("height", ctypes.c_uint32),
+                ("pixelFormat", ctypes.c_uint32), ("position", _Point)]
+
+
+class _VideoSignal(ctypes.Structure):
+    _fields_ = [("pixelRate", ctypes.c_uint64), ("hSync", _Rational),
+                ("vSync", _Rational), ("active", _Region), ("total", _Region),
+                ("standard", ctypes.c_uint32), ("scanline", ctypes.c_uint32)]
+
+
 class _ModeUnion(ctypes.Union):
     # DISPLAYCONFIG_TARGET_MODE is the largest union member (48 bytes,
     # 8-byte alignment because the video signal contains a UINT64 pixelRate).
-    _fields_ = [("data", ctypes.c_uint64 * 6)]
+    _fields_ = [("data", ctypes.c_uint64 * 6), ("source", _SourceMode),
+                ("target", _VideoSignal)]
 
 
 class _ModeInfo(ctypes.Structure):
@@ -67,6 +112,38 @@ class _SourceName(ctypes.Structure):
 class _AdvancedColor(ctypes.Structure):
     _fields_ = [("header", _DeviceHeader), ("flags", ctypes.c_uint32),
                 ("encoding", ctypes.c_uint32), ("bits", ctypes.c_uint32)]
+
+
+def _mode_fingerprint(path, modes, count):
+    """Normalize meaningful fields, never padding or unstable mode-array indices.
+
+    The non-virtual QDC_ONLY_ACTIVE_PATHS API supplies ordinary source/target
+    mode indices. Fail closed if a driver cannot provide their identities.
+    """
+    resolved = []
+    for reference, kind in ((path.source, 1), (path.target, 2)):
+        if reference.mode >= count:
+            raise ScreenEffectError("Windows could not verify display resolution and refresh rate. Leave Gamma at 1.00.")
+        mode = modes[reference.mode]
+        if (mode.type != kind or mode.id != reference.id
+                or mode.adapter.low != reference.adapter.low
+                or mode.adapter.high != reference.adapter.high):
+            raise ScreenEffectError("Windows returned inconsistent display mode information. Leave Gamma at 1.00.")
+        resolved.append(mode)
+    source, target = resolved[0].data.source, resolved[1].data.target
+    if (not source.width or not source.height or not target.active.width
+            or not target.active.height or not target.vSync.denominator
+            or not path.target.refreshDenominator):
+        raise ScreenEffectError("Windows could not verify the active display mode. Leave Gamma at 1.00.")
+    return [source.width, source.height, source.pixelFormat,
+            source.position.x, source.position.y, target.pixelRate,
+            target.hSync.numerator, target.hSync.denominator,
+            target.vSync.numerator, target.vSync.denominator,
+            target.active.width, target.active.height,
+            target.total.width, target.total.height, target.standard & 0x3FFFFF,
+            target.scanline, path.target.rotation, path.target.scaling,
+            path.target.refreshNumerator, path.target.refreshDenominator,
+            path.target.scanline, path.target.technology, int(bool(path.target.available))]
 
 
 class WindowsGammaApi:
@@ -132,11 +209,15 @@ class WindowsGammaApi:
                 sdr = not bool(advanced.flags & 0b110)
                 token = [source.adapter.low, source.adapter.high, source.id,
                          target.adapter.low, target.adapter.high, target.id]
-                entry = displays.setdefault(name.name, {"tokens": [], "sdr": True})
+                entry = displays.setdefault(name.name, {"tokens": [], "modes": [], "sdr": True})
                 entry["tokens"].append(token)
+                # Keep each clone target's mode paired with its identity.
+                entry["modes"].append(token + _mode_fingerprint(path, modes, mode_count.value)
+                                      + [advanced.encoding, advanced.bits])
                 entry["sdr"] = entry["sdr"] and sdr
             for entry in displays.values():
                 entry["tokens"].sort()
+                entry["modes"].sort()
             return displays
         raise ScreenEffectError("The display configuration is changing. Try Gamma again after it settles.")
 
@@ -169,12 +250,25 @@ def _ramps_match(left, right, tolerance=0):
                                                for a, b in zip(left, right))
 
 
+def _device_matches(current, expected, *, legacy=False):
+    if not current or not current.get("sdr") or not expected.get("sdr"):
+        return False
+    if legacy and "modes" not in expected:
+        # Old recovery records did not store mode details. Exact ramp ownership
+        # plus current verified SDR identity remains required; adopt today's
+        # fingerprint before any recovery write, then revalidate it normally.
+        return current.get("tokens") == expected.get("tokens")
+    return current == expected
+
+
 class GammaEffect:
     def __init__(self, api=None):
         self.api = api
         self.originals = {}
         self.last = {}
         self.devices = {}
+        self.unresolved = set()
+        self.intents = {}
 
     def _api(self):
         if self.api is None:
@@ -185,6 +279,8 @@ class GammaEffect:
         if gamma == 100 and not self.originals:
             return None  # All other controls work without even loading GDI.
         api = self._api()
+        if self.unresolved:
+            raise ScreenEffectError("A previous Gamma write could not be verified. Use Revert before adjusting colors.")
         devices = api.snapshot()
         if not devices or any(not item["sdr"] for item in devices.values()):
             raise ScreenEffectError("Gamma requires HDR and advanced color to be off on every display. Leave Gamma at 1.00.")
@@ -197,7 +293,31 @@ class GammaEffect:
         originals = self.originals or previous
         target = {name: gamma_ramp(ramp, gamma) for name, ramp in originals.items()}
         return {"devices": devices, "originals": originals, "previous": previous,
-                "target": target, "gamma": gamma, "attempted": []}
+                "target": target, "gamma": gamma, "attempted": [],
+                "unresolved": [name for name in target if not _ramps_match(target[name], previous[name])]}
+
+    def _read_after_write(self, name):
+        # Only an immediate bounded retry may identify a transiently unreadable
+        # side effect of our write. A later arbitrary state is not ours.
+        try:
+            return self._api().read(name)
+        except (ScreenEffectError, OSError):
+            return self._api().read(name)
+
+    def _check_target(self, name, devices):
+        if not _device_matches(self._api().snapshot().get(name), devices[name]):
+            raise ScreenEffectError("Display identity, SDR mode, resolution or refresh rate changed before Gamma could be written.")
+
+    def verify_plan(self, plan):
+        if plan is None:
+            return
+        if self._api().snapshot() != plan["devices"]:
+            raise ScreenEffectError("Display mode changed while Gamma was being applied.")
+        for name, expected in plan["target"].items():
+            if name in self.unresolved or not _ramps_match(self._api().read(name), expected):
+                raise ScreenEffectError("Gamma changed before its preview could be confirmed.")
+        if self._api().snapshot() != plan["devices"]:
+            raise ScreenEffectError("Display mode changed during Gamma verification.")
 
     def commit(self, plan, record_progress=None):
         if plan is None:
@@ -215,44 +335,74 @@ class GammaEffect:
             if not _ramps_match(api.read(name), plan["previous"][name]):
                 raise ScreenEffectError("Another app changed Gamma during apply.")
             if _ramps_match(target, plan["previous"][name]):
+                if name in plan["unresolved"]:
+                    plan["unresolved"].remove(name)
                 continue
+            self._check_target(name, plan["devices"])
             plan["attempted"].append(name)
-            self.last[name] = target
-            api.write(name, target)
-            observed = api.read(name)
+            self.unresolved.add(name)
+            self.intents[name] = target
+            write_error = None
+            try:
+                api.write(name, target)
+            except Exception as error:
+                # A failed driver call is not proof that it left the ramp
+                # untouched. Read back and durably identify any partial write
+                # before the transaction tries to roll it back.
+                write_error = error
+            observed = self._read_after_write(name)
             # A driver can apply a quantized/partial curve while returning
             # success. Capture that exact state before rejecting it, so the
             # failed preview can still restore what this write changed.
             plan["target"][name] = observed
             self.last[name] = observed
+            self.unresolved.discard(name)
+            self.intents.pop(name, None)
+            plan["unresolved"].remove(name)
             if record_progress is not None:
                 record_progress()
+            if write_error is not None:
+                raise write_error
             if not _ramps_match(observed, target, tolerance=2):
                 raise ScreenEffectError("The display driver did not apply the requested Gamma. Leave Gamma at 1.00.")
+        self.verify_plan(plan)
+        plan["complete"] = True
 
-    def rollback(self, plan, names=None):
+    def rollback(self, plan, names=None, record_progress=None):
         if plan is None:
             return
         api = self._api()
-        devices = api.snapshot()
         if plan["attempted"] and not self.originals:
             self.devices = dict(plan["devices"])
             self.originals = dict(plan["originals"])
             self.last = dict(plan["target"])
         failures = []
         for name in reversed(list(names if names is not None else plan["attempted"])):
-            if devices.get(name) != plan["devices"][name]:
-                continue  # Detached/changed/HDR display is no longer ours.
             try:
+                if not _device_matches(api.snapshot().get(name), plan["devices"][name]):
+                    if name in self.unresolved:
+                        raise ScreenEffectError("An unverified Gamma write is retained because display mode changed.")
+                    self._forget(name)
+                    continue  # Never write to a detached/changed/HDR display.
                 current = api.read(name)
-                if _ramps_match(current, plan["previous"][name], tolerance=2):
+                if _ramps_match(current, plan["previous"][name]):
                     self.last[name] = current
-                elif _ramps_match(current, plan["target"][name], tolerance=2):
-                    api.write(name, plan["previous"][name])
-                    observed = api.read(name)
-                    if not _ramps_match(observed, plan["previous"][name], tolerance=2):
-                        raise ScreenEffectError("Windows could not restore the previous Gamma.")
-                    self.last[name] = observed
+                    self.unresolved.discard(name)
+                    self.intents.pop(name, None)
+                    if name in plan["unresolved"]:
+                        plan["unresolved"].remove(name)
+                elif _ramps_match(current, plan["target"][name]) or _ramps_match(current, self.last[name]):
+                    self.last[name] = current
+                    self.unresolved.discard(name)
+                    self.intents.pop(name, None)
+                    self._restore_write(name, plan["previous"][name], record_progress)
+                    plan["target"][name] = self.last[name]
+                    if name in plan["unresolved"]:
+                        plan["unresolved"].remove(name)
+                elif name in self.unresolved:
+                    raise ScreenEffectError("The result of a Gamma write is unknown. Recovery evidence was retained; no unverified ramp will be overwritten.")
+                else:
+                    self._forget(name)
             except Exception as error:
                 failures.append(error)
             # A different current ramp belongs to an external actor. Never
@@ -270,6 +420,8 @@ class GammaEffect:
             self.last = dict(plan["target"])
             if plan["gamma"] == 100:
                 self.originals, self.last, self.devices = {}, {}, {}
+                self.unresolved.clear()
+                self.intents.clear()
 
     def verify_current(self, gamma):
         """Read-only ownership check before confirming/retaining a preview."""
@@ -278,6 +430,8 @@ class GammaEffect:
                 raise ScreenEffectError("The requested Gamma preview is no longer active. Preview it again before applying.")
             return
         api = self._api()
+        if self.unresolved:
+            raise ScreenEffectError("The Gamma write has not been verified. Use Revert before Apply.")
         if api.snapshot() != self.devices:
             raise ScreenEffectError("The display configuration changed. Its current Gamma will not be overwritten.")
         for name, expected in self.last.items():
@@ -287,28 +441,72 @@ class GammaEffect:
             # newer external ramp as ours merely because it is close to it.
             if not _ramps_match(api.read(name), expected):
                 raise ScreenEffectError("Another app changed display Gamma. Its settings will not be overwritten.")
+        if api.snapshot() != self.devices:
+            raise ScreenEffectError("Display mode changed during Gamma verification.")
 
-    def restore(self):
+    def _restore_write(self, name, target, record_progress=None):
+        """Capture every immediate restore result before testing success."""
+        self._check_target(name, self.devices)
+        self.unresolved.add(name)
+        self.intents[name] = target
+        if record_progress is not None:
+            try:
+                record_progress()
+            except Exception:
+                self.unresolved.discard(name)  # No write was attempted.
+                self.intents.pop(name, None)
+                raise
+        try:
+            if not _ramps_match(self._api().read(name), self.last[name]):
+                raise ScreenEffectError("Another app changed Gamma before restoration. Its settings will not be overwritten.")
+            self._check_target(name, self.devices)
+        except Exception:
+            self.unresolved.discard(name)  # Durable intent, but no actual write.
+            self.intents.pop(name, None)
+            raise
+        error = None
+        try:
+            self._api().write(name, target)
+        except Exception as failure:
+            error = failure
+        observed = self._read_after_write(name)
+        self.last[name] = observed
+        self.unresolved.discard(name)
+        self.intents.pop(name, None)
+        if record_progress is not None:
+            record_progress()
+        self._check_target(name, self.devices)
+        if error is not None:
+            raise error
+        if not _ramps_match(observed, target, tolerance=2):
+            raise ScreenEffectError("Windows only partially restored Gamma. Its exact remaining state was retained; try Revert again.")
+
+    def restore(self, record_progress=None):
         if not self.originals:
             return True
         api = self._api()
-        devices = api.snapshot()
         restored = True
         failures = []
         for name, original in list(self.originals.items()):
-            if devices.get(name) != self.devices[name]:
-                restored = False
-                self._forget(name)
-                continue
             try:
-                current = api.read(name)
-                if _ramps_match(current, original, tolerance=2):
+                if not _device_matches(api.snapshot().get(name), self.devices[name]):
+                    if name in self.unresolved:
+                        raise ScreenEffectError("An unverified Gamma write is retained because display mode changed.")
+                    restored = False
                     self._forget(name)
                     continue
-                if _ramps_match(current, self.last[name], tolerance=2):
-                    api.write(name, original)
-                    if not _ramps_match(api.read(name), original, tolerance=2):
-                        raise ScreenEffectError("Windows could not restore the previous Gamma. Try Revert again.")
+                current = api.read(name)
+                if _ramps_match(current, original):
+                    self._forget(name)
+                    continue
+                if (_ramps_match(current, self.last[name])
+                        or (name in self.unresolved and _ramps_match(current, self.intents[name]))):
+                    self.last[name] = current
+                    self.unresolved.discard(name)
+                    self.intents.pop(name, None)
+                    self._restore_write(name, original, record_progress)
+                elif name in self.unresolved:
+                    raise ScreenEffectError("The result of a Gamma write is unknown. Recovery evidence was retained; no unverified ramp will be overwritten.")
                 else:
                     restored = False
                 self._forget(name)
@@ -322,38 +520,58 @@ class GammaEffect:
         self.originals.pop(name, None)
         self.last.pop(name, None)
         self.devices.pop(name, None)
+        self.unresolved.discard(name)
+        self.intents.pop(name, None)
 
     def recovery_data(self, plan=None):
         if plan is not None:
-            return {key: plan[key] for key in ("devices", "originals", "previous", "target")}
+            if plan.get("complete") and plan.get("gamma") == 100:
+                return None  # The baseline is already restored and verified.
+            return {**{key: plan[key] for key in ("devices", "originals", "previous", "target")},
+                    "previous": plan["target"] if plan.get("complete") else plan["previous"],
+                    "unresolved": plan.get("unresolved", [])}
         if not self.originals:
             return None
         return {"devices": self.devices, "originals": self.originals,
-                "previous": self.last, "target": self.last}
+                "previous": self.last,
+                "target": {name: self.intents.get(name, self.last[name]) for name in self.last},
+                "unresolved": sorted(self.unresolved)}
 
-    def matching_recovery(self, data):
+    def matching_recovery(self, data, devices=None):
         if data is None:
             return {}
         api = self._api()
-        devices = api.snapshot()
+        if devices is None:
+            devices = api.snapshot()
         matching = {}
         for name, device in data["devices"].items():
-            if devices.get(name) != device or not device["sdr"]:
+            if not _device_matches(devices.get(name), device, legacy=True):
                 continue
             current = api.read(name)
-            if any(_ramps_match(current, data[key][name], tolerance=2)
-                   for key in ("target", "previous")):
+            if any(_ramps_match(current, data[key][name])
+                   for key in ("target", "previous", "originals")):
                 matching[name] = current
         return matching
 
-    def recover(self, data):
+    def adopt_recovery(self, data):
         if data is None:
             return
-        matching = self.matching_recovery(data)
-        self.originals = {name: tuple(data["originals"][name]) for name in matching}
-        self.devices = {name: data["devices"][name] for name in matching}
-        self.last = matching
-        self.restore()
+        devices = self._api().snapshot()
+        matching = self.matching_recovery(data, devices)
+        unresolved = set(data.get("unresolved", ()))
+        # Unknown writes must not disappear just because a later read is not a
+        # known candidate. Keep them pending without claiming arbitrary state.
+        names = set(matching) | unresolved
+        self.originals = {name: tuple(data["originals"][name]) for name in names}
+        self.devices = {name: devices[name] if name in matching else data["devices"][name]
+                        for name in names}
+        self.last = {name: matching.get(name, tuple(data["previous"][name])) for name in names}
+        self.unresolved = unresolved - matching.keys()
+        self.intents = {name: tuple(data["target"][name]) for name in self.unresolved}
+
+    def recover(self, data, record_progress=None):
+        self.adopt_recovery(data)
+        self.restore(record_progress)
 
 
 class ScreenEffect:
@@ -362,16 +580,20 @@ class ScreenEffect:
         self._initialized = False
         self._original = None
         self._last_applied = None
+        self._matrix_unresolved = False
+        self._matrix_intent = None
+        self._journal_cache = None
+        self._journal_stamp = None
         self._recovery_path = Path(recovery_path) if recovery_path is not None else None
         self._gamma = GammaEffect(gamma_api)
 
     @property
     def active(self) -> bool:
-        return self._last_applied is not None or bool(self._gamma.originals)
+        return self._last_applied is not None or self._matrix_unresolved or bool(self._gamma.originals)
 
     @property
     def replaces_existing_effect(self) -> bool:
-        return self._original is not None and not matrices_match(
+        return self._original is not None and not _windows_matrices_match(
             self._original, identity_matrix()
         )
 
@@ -407,12 +629,60 @@ class ScreenEffect:
         effect = Effect()
         if not self._dll.MagGetFullscreenColorEffect(ctypes.byref(effect)):
             raise ScreenEffectError("Windows could not read the current desktop color effect.")
-        return tuple(effect)
+        matrix = tuple(effect)
+        if not _finite_windows_matrix(matrix):
+            raise ScreenEffectError("Windows returned an invalid desktop color effect. No new colors were applied.")
+        return matrix
 
     def _write_matrix(self, matrix: tuple[float, ...]):
+        if not _finite_windows_matrix(matrix):
+            raise ScreenEffectError("The desktop color matrix is invalid. No new colors were applied.")
         effect = Effect(*matrix)
         if not self._dll.MagSetFullscreenColorEffect(ctypes.byref(effect)):
             raise ScreenEffectError("Windows declined the desktop color change. Check display and HDR settings.")
+
+    def _read_after_matrix_write(self):
+        try:
+            return self._read_matrix()
+        except (ScreenEffectError, OSError):
+            return self._read_matrix()
+
+    def _write_matrix_tracked(self, target, gamma_plan=None):
+        """Journal intent and exact result even when Windows partially fails."""
+        previous_pending, previous_intent = self._matrix_unresolved, self._matrix_intent
+        self._matrix_unresolved, self._matrix_intent = True, target
+        try:
+            self._save_recovery(target, gamma_plan)
+        except Exception:
+            self._matrix_unresolved, self._matrix_intent = previous_pending, previous_intent
+            raise  # Durable intent failed: no display write is allowed.
+        try:
+            expected = self._last_applied if self._last_applied is not None else self._original
+            if not _windows_matrices_match(self._read_matrix(), expected):
+                raise ScreenEffectError("Another app changed the desktop color effect before the write. Its colors will not be overwritten.")
+        except Exception:
+            self._matrix_unresolved, self._matrix_intent = previous_pending, previous_intent
+            raise  # Nothing was written; do not mark an unknown side effect.
+        write_error = None
+        try:
+            self._write_matrix(target)
+        except Exception as error:
+            write_error = error
+        observed = self._read_after_matrix_write()
+        self._last_applied = observed
+        self._matrix_unresolved, self._matrix_intent = False, None
+        # Memory ownership updates precede persistence. If disk IO fails the
+        # active session can still retry; the older durable intent remains.
+        self._save_recovery(observed, gamma_plan)
+        if write_error is not None:
+            raise write_error
+        if not _windows_matrices_match(observed, target):
+            raise ScreenEffectError("Windows only partially applied or restored the desktop color effect. Its exact remaining state was retained.")
+        return observed
+
+    def _save_current_recovery(self, gamma_plan=None):
+        target = self._matrix_intent if self._matrix_unresolved else self._last_applied
+        self._save_recovery(target if target is not None else self._original, gamma_plan)
 
     def _read_recovery(self):
         path = self._recovery_path
@@ -421,27 +691,27 @@ class ScreenEffect:
         if path.is_symlink() or not path.is_file():
             raise ScreenEffectError("The local color-recovery file is unsafe. Do not apply colors.")
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            # A damaged local record must not freeze the GUI while loading an
+            # unbounded file. This comfortably fits the maximum 128 displays.
+            with path.open("rb") as source:
+                payload = source.read(MAX_RECOVERY_BYTES + 1)
+            if len(payload) > MAX_RECOVERY_BYTES:
+                raise ValueError("Recovery record is too large")
+            data = json.loads(payload.decode("utf-8"))
             if not isinstance(data, dict):
                 raise ValueError("Invalid recovery record")
-            if data.get("schema") not in (1, 2):
+            if type(data.get("schema")) is not int or data["schema"] not in (1, 2, 3):
                 raise ValueError("Unsupported recovery record")
             for name in ("original", "target"):
                 values = data[name]
-                if len(values) != 25 or any(
-                    type(value) not in (int, float) or not math.isfinite(value)
-                    for value in values
-                ):
+                if not _finite_windows_matrix(values):
                     raise ValueError(f"Invalid {name} matrix")
             previous = data.get("previous")
-            if previous is not None and (
-                len(previous) != 25 or any(
-                    type(value) not in (int, float) or not math.isfinite(value)
-                    for value in previous
-                )
-            ):
+            if previous is not None and not _finite_windows_matrix(previous):
                 raise ValueError("Invalid previous matrix")
             data["previous"] = previous
+            if type(data.get("matrix_unresolved", False)) is not bool:
+                raise ValueError("Invalid pending matrix write")
             gamma = data.get("gamma")
             if gamma is not None:
                 if not isinstance(gamma, dict):
@@ -460,14 +730,25 @@ class ScreenEffect:
                             type(part) is not int for part in token) for token in tokens
                     ):
                         raise ValueError("Invalid Gamma display identity")
+                    if "modes" in device:
+                        modes = device["modes"]
+                        if not isinstance(modes, list) or len(modes) != len(tokens) or any(
+                            not isinstance(mode, list) or len(mode) != 31 or any(
+                                type(part) is not int for part in mode) for mode in modes
+                        ):
+                            raise ValueError("Invalid Gamma display modes")
                 for key in ("originals", "previous", "target"):
                     ramps = gamma[key]
                     if not isinstance(ramps, dict) or set(ramps) != set(names):
                         raise ValueError("Invalid Gamma ramps")
                     for ramp in ramps.values():
                         gamma_ramp(ramp, 100)  # Validates length and uint16 values.
+                unresolved = gamma.get("unresolved", [])
+                if (not isinstance(unresolved, list) or len(unresolved) != len(set(unresolved))
+                        or any(not isinstance(name, str) or name not in names for name in unresolved)):
+                    raise ValueError("Invalid unverified Gamma writes")
             return data
-        except (OSError, ValueError, KeyError, TypeError) as error:
+        except (OSError, ValueError, KeyError, TypeError, RecursionError) as error:
             raise ScreenEffectError("The local color-recovery record could not be read safely.") from error
 
     def _save_recovery(self, target, gamma_plan=None):
@@ -478,19 +759,29 @@ class ScreenEffect:
         if path.exists() and (path.is_symlink() or not path.is_file()):
             raise ScreenEffectError("The local color-recovery file is unsafe. Do not apply colors.")
         data = {
-            "schema": 2,
+            "schema": 3,
             "original": list(self._original),
             "previous": list(self._last_applied) if self._last_applied is not None else None,
             "target": list(target),
             "gamma": self._gamma.recovery_data(gamma_plan),
+            "matrix_unresolved": self._matrix_unresolved,
         }
+        payload = json.dumps(data, separators=(",", ":"))
+        if path.exists():
+            stamp = path.stat()
+            if (payload == self._journal_cache and
+                    (stamp.st_size, stamp.st_mtime_ns) == self._journal_stamp):
+                return  # Identical already-durable evidence needs no fsync.
         temporary = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
         try:
             with temporary.open("x", encoding="utf-8") as output:
-                json.dump(data, output, separators=(",", ":"))
+                output.write(payload)
                 output.flush()
                 os.fsync(output.fileno())
             os.replace(temporary, path)
+            stamp = path.stat()
+            self._journal_cache = payload
+            self._journal_stamp = (stamp.st_size, stamp.st_mtime_ns)
         finally:
             temporary.unlink(missing_ok=True)
 
@@ -500,6 +791,7 @@ class ScreenEffect:
             if path.is_symlink() or not path.is_file():
                 raise ScreenEffectError("The local color-recovery file is unsafe.")
             path.unlink()
+        self._journal_cache = self._journal_stamp = None
 
     def recovery_needed(self) -> bool:
         """Read-only detection of a previous unclean exit; never auto-restore."""
@@ -511,7 +803,9 @@ class ScreenEffect:
         candidates = [record["target"]]
         if record["previous"] is not None:
             candidates.append(record["previous"])
-        if any(matrices_match(current, item) for item in candidates) or self._gamma.matching_recovery(record.get("gamma")):
+        if (record.get("matrix_unresolved") or (record.get("gamma") or {}).get("unresolved")
+                or any(_windows_matrices_match(current, item) for item in candidates)
+                or self._gamma.matching_recovery(record.get("gamma"))):
             return True
         self._clear_recovery()
         self.disable()
@@ -527,48 +821,73 @@ class ScreenEffect:
             candidates.append(record["previous"])
         if restore:
             failures = []
+            self._original = tuple(record["original"])
+            self._last_applied = tuple(record["target"])
+            self._matrix_unresolved = bool(record.get("matrix_unresolved"))
+            self._matrix_intent = tuple(record["target"]) if self._matrix_unresolved else None
+            gamma_loaded = False
+            try:
+                self._gamma.adopt_recovery(record.get("gamma"))
+                gamma_loaded = True
+            except (ScreenEffectError, OSError) as error:
+                failures.append(error)
+            pending_gamma = None if gamma_loaded else record.get("gamma")
             try:
                 current = self._read_matrix()
-                if any(matrices_match(current, item) for item in candidates):
-                    original = tuple(record["original"])
-                    self._write_matrix(original)
-                    if not matrices_match(self._read_matrix(), original):
-                        raise ScreenEffectError("Windows did not restore the previous desktop color effect.")
+                if _windows_matrices_match(current, self._original):
+                    self._last_applied = None
+                    self._matrix_unresolved, self._matrix_intent = False, None
+                elif any(_windows_matrices_match(current, item) for item in candidates):
+                    self._last_applied = current
+                    self._write_matrix_tracked(self._original, pending_gamma)
+                    self._last_applied = None
+                elif self._matrix_unresolved:
+                    raise ScreenEffectError("The prior matrix write is unverified. Recovery evidence was retained; another app's colors will not be overwritten.")
+                else:
+                    self._last_applied = None  # Definitely external; no write.
             except (ScreenEffectError, OSError) as error:
                 failures.append(error)
             try:
                 # The layers restore independently: a declined matrix restore
                 # must not leave an otherwise recoverable Gamma ramp behind.
-                self._gamma.recover(record.get("gamma"))
+                if gamma_loaded:
+                    self._gamma.restore(self._save_current_recovery)
             except (ScreenEffectError, OSError) as error:
                 failures.append(error)
             if failures:
-                # Retain the original durable record even after partial success;
-                # retry recognizes any remaining owned layer without rewriting
-                # restored or newer external state.
+                try:
+                    self._save_current_recovery(pending_gamma)
+                except (ScreenEffectError, OSError):
+                    pass  # The older write-intent record remains durable.
                 raise ScreenEffectError("Windows could not fully recover previous colors. The recovery record was retained; close and reopen to retry.") from failures[0]
         else:
             # Declining after a failed recovery must not implicitly restore the
             # Gamma layer through disable(). Relinquish it without a write.
             self._gamma.originals, self._gamma.last, self._gamma.devices = {}, {}, {}
+            self._gamma.unresolved.clear()
+            self._gamma.intents.clear()
+            self._last_applied = None
+            self._matrix_unresolved, self._matrix_intent = False, None
         self._clear_recovery()
         self.disable()
 
     def verify_current(self, values):
         """Verify actual shared display state without reapplying any layer."""
-        if not self._initialized or self._last_applied is None:
+        if not self._initialized or self._last_applied is None or self._matrix_unresolved:
             raise ScreenEffectError("The requested color preview is no longer active. Preview it again before applying.")
         current = self._read_matrix()
-        if (not matrices_match(current, self._last_applied)
-                or not matrices_match(current, color_matrix(values))):
+        if (not _windows_matrices_match(current, self._last_applied)
+                or not _windows_matrices_match(current, color_matrix(values))):
             raise ScreenEffectError("Another app changed the desktop color effect. This app will not overwrite it.")
         self._gamma.verify_current(values.gamma)
 
     def apply(self, values):
         self.initialize()
+        if self._matrix_unresolved:
+            raise ScreenEffectError("A previous desktop color write could not be verified. Use Revert before adjusting colors.")
         current = self._read_matrix()
         expected = self._last_applied if self._last_applied is not None else self._original
-        if not matrices_match(current, expected):
+        if not _windows_matrices_match(current, expected):
             raise ScreenEffectError(
                 "Another app changed the desktop color effect. This app will not overwrite it."
             )
@@ -576,39 +895,49 @@ class ScreenEffect:
         # Verify Gamma support/topology before any display mutation, including
         # the matrix. A rejected Gamma request must not partially apply colors.
         plan = self._gamma.prepare(values.gamma)
-        self._save_recovery(target, plan)
+        if plan is not None:
+            self._save_recovery(target, plan)
         previous = self._last_applied
         matrix_attempted = False
         try:
             self._gamma.commit(plan, lambda: self._save_recovery(target, plan))
             # Save exact driver readback before changing the matrix, so a
             # terminated process can recognize its applied Gamma later.
-            self._save_recovery(target, plan)
-            if not matrices_match(self._read_matrix(), expected):
+            if not _windows_matrices_match(self._read_matrix(), expected):
                 raise ScreenEffectError("Another app changed the desktop color effect during apply.")
-            self._last_applied = target
+            self._gamma.verify_plan(plan)
             matrix_attempted = True
-            self._write_matrix(target)
-            if not matrices_match(self._read_matrix(), target):
-                raise ScreenEffectError("Windows did not apply the requested desktop color effect.")
+            matrix_observed = self._write_matrix_tracked(target, plan)
+            self._gamma.verify_plan(plan)
             self._gamma.accept(plan)
-            self._save_recovery(target)
+            self._save_recovery(matrix_observed)
         except Exception as error:
             rollback_failed = False
             try:
                 current = self._read_matrix()
-                if matrix_attempted and matrices_match(current, target) and not matrices_match(current, expected):
-                    self._write_matrix(expected)
-                    if not matrices_match(self._read_matrix(), expected):
-                        raise ScreenEffectError("Windows could not restore the previous colors.")
+                if self._matrix_unresolved:
+                    if (_windows_matrices_match(current, expected)
+                            or _windows_matrices_match(current, self._matrix_intent)):
+                        self._last_applied = current
+                        self._matrix_unresolved, self._matrix_intent = False, None
+                    else:
+                        raise ScreenEffectError("A partial desktop write could not be verified. Its recovery evidence was retained.")
+                if (matrix_attempted and self._last_applied is not None
+                        and _windows_matrices_match(current, self._last_applied)
+                        and not _windows_matrices_match(current, expected)):
+                    self._write_matrix_tracked(expected)
                 self._last_applied = previous
             except Exception:
                 rollback_failed = True
             try:
-                self._gamma.rollback(plan)
+                self._gamma.rollback(plan, record_progress=self._save_current_recovery)
             except Exception:
                 rollback_failed = True
             if rollback_failed:
+                try:
+                    self._save_current_recovery()
+                except Exception:
+                    pass  # Never delete the pre-write evidence after failed IO.
                 raise ScreenEffectError("Color apply failed and could not be fully restored. Use Revert again.") from error
             if self._last_applied is not None or self._gamma.originals:
                 self._save_recovery(self._last_applied or self._original)
@@ -626,30 +955,41 @@ class ScreenEffect:
             return True
         restored = True
         failures = []
-        if self._last_applied is not None:
+        if self._last_applied is not None or self._matrix_unresolved:
             try:
                 current = self._read_matrix()
-                if matrices_match(current, self._last_applied):
+                if _windows_matrices_match(current, self._original):
+                    self._last_applied = None
+                    self._matrix_unresolved, self._matrix_intent = False, None
+                elif ((self._last_applied is not None and _windows_matrices_match(current, self._last_applied))
+                      or (self._matrix_unresolved and _windows_matrices_match(current, self._matrix_intent))):
                     # Keep ownership when Windows refuses restoration so
                     # Disable can retry while the other layer is restored.
-                    self._write_matrix(self._original)
-                    if not matrices_match(self._read_matrix(), self._original):
-                        raise ScreenEffectError("Windows did not restore the previous colors.")
+                    self._last_applied = current
+                    self._matrix_unresolved, self._matrix_intent = False, None
+                    self._write_matrix_tracked(self._original)
                     self._last_applied = None
+                elif self._matrix_unresolved:
+                    raise ScreenEffectError("The result of the desktop color write is unknown. Recovery evidence was retained; no unverified colors will be overwritten.")
                 else:
                     restored = False
                     self._last_applied = None
             except Exception as error:
                 failures.append(error)
         try:
-            restored = self._gamma.restore() and restored
+            restored = self._gamma.restore(self._save_current_recovery) and restored
         except Exception as error:
             failures.append(error)
         if failures:
             # Preserve the record and retry state for either remaining layer.
+            try:
+                self._save_current_recovery()
+            except Exception:
+                pass
             raise ScreenEffectError("Windows could not fully restore colors. Try Revert again.") from failures[0]
         self._clear_recovery()
         self._last_applied = None
+        self._matrix_unresolved, self._matrix_intent = False, None
         self._original = None
         if self._initialized:
             self._dll.MagUninitialize()

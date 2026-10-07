@@ -1,12 +1,11 @@
-SCREEN COLOR CHANGER - v0.3.1 LOCAL RELEASE CANDIDATE
+SCREEN COLOR CHANGER - v0.3.2
 
-Compact local color-filter utility for 64-bit Windows. Local candidate; not a
-published site download.
+Compact local color-filter utility for 64-bit Windows.
 
 INSTALL
 
 1. Keep Screen Color Changer.pyw, color_math.py, screen_backend.py,
-   Installer.bat, LICENSE, this file, and both requirements-win-*.txt files
+   Installer.bat, LICENSE, THIRD_PARTY_NOTICES.txt, this file, and both requirements-win-*.txt files
    together in one folder.
 2. Double-click Installer.bat.
 3. Press Y once to accept the Terms and bundled Tool License and approve setup.
@@ -14,10 +13,13 @@ INSTALL
 5. Double-click the Screen Color Changer shortcut created in the folder.
 
 Keep the complete folder path at 72 characters or fewer.
+Do not use percent signs (%) in the folder path; Windows shortcut creation can
+expand them as environment variables. Spaces, ^, &, parentheses and ! are supported.
 
 USE
 
 The compact 496 x 496 window uses the same UI style as the other Fleece tools.
+On smaller or highly scaled screens it fits the work area and scrolls its controls.
 It has Digital vibrance (0-300%, neutral 100%), Hue (-180 to 180 degrees),
 Brightness (-20 to 20%, neutral 0%), Contrast (50-200%, neutral 100%), and
 Gamma (0.50 to 2.00, neutral 1.00). Type an exact value above each slider or
@@ -25,6 +27,9 @@ use its arrow keys. Gamma moves in 0.01 steps, including 1.03. The other
 controls move one unit at a time, including 255% vibrance. Moving or scrolling
 the controls previews the filter immediately. Finish typing a numeric entry
 with Enter or by leaving its box. Rapid edits are coalesced every 75 ms.
+Display work runs serially in the background so a slow driver does not freeze
+the controls. Pending preview edits are coalesced; Apply, Reset and close wait
+for their display operation before reporting completion.
 Apply confirms the latest values and saves them locally. Slider edits alone
 are never saved.
 Apply and close-to-tray check the actual Windows matrix and tracked gamma again;
@@ -32,6 +37,8 @@ an external program's newer effect is not silently reported as successfully appl
 Unconfirmed previews revert after 15 seconds of inactivity,
 returning to your last applied profile or the prior desktop colors. Continuing
 to adjust a control refreshes this safety timer.
+Typing in an exact-value box also counts as editing activity, without applying
+the incomplete number until you commit it.
 Closing before Apply restores the prior colors and exits. After Apply,
 closing discards any later unsaved edits and keeps the applied profile in the
 tray. Click its icon, choose Open settings, or launch the shortcut again to return
@@ -46,6 +53,11 @@ if the recorded color matrix still matches. An external app applying an
 identical matrix cannot be distinguished by this comparison.
 Crash recovery verifies restoration before deleting its record. Failed restoration
 keeps recovery evidence for a later retry.
+Failed display writes are read back and partial effects are tracked before rollback.
+Ownership uses exact Windows float32 matrix values and exact gamma ramps, not
+similar values. Failed rollback keeps recovery evidence and a safety retry timer.
+Partial restoration and unresolved readbacks retain recovery evidence too.
+Gamma verifies each target's current SDR status, identity and mode before writes.
 
 LIMITATIONS
 
@@ -69,6 +81,9 @@ hashes; a missing or changed selected dependency lock stops setup.
 The selected lock is checked before the first download, including during repair.
 Keep both architecture locks if moving between x64 and ARM64 computers. Run
 Installer.bat again to repair or after moving the complete folder.
+Pending runtime recovery happens before deciding another download is needed.
+Close the utility before repair, and wait for setup to finish before opening
+its shortcut. A shared startup/setup gate prevents overlapping repair and launch.
 It compiles all three Python sources before package downloads
 and runs an offline self-test without changing the display before success.
 
@@ -92,6 +107,8 @@ LICENSE
 Copyright 2026 Fleece. This project is source-available, not open source.
 The bundled LICENSE permits an unmodified official release for lawful
 personal, non-commercial use. Modification and redistribution are prohibited.
-Third-party materials keep their own licenses.
+Third-party materials keep their own licenses. THIRD_PARTY_NOTICES.txt lists
+the downloaded components, upstream sources and license terms; Fleece's
+restrictions do not remove rights under those third-party licenses.
 
 This project was made with AI.

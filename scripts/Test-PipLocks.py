@@ -187,7 +187,7 @@ def verify_installer(root, arch, expected, directory):
     sequence = ':InstallEmbeddedPackages\ncall :ValidateEmbeddedPython\nif errorlevel 1 exit /b 1\ncall :ValidatePipRequirements\nif errorlevel 1 exit /b 1'
     if sequence not in source:
         raise ValueError("Dependency lock validation must precede package reuse or replacement")
-    earliest = ':InstallPythonPackages\nif not defined APP_PY exit /b 1\nif not exist "%APP_PY%" exit /b 1\ncall :ValidatePipRequirements\nif errorlevel 1 exit /b 1\ncall :CurrentPackagesFullyHealthy'
+    earliest = ':InstallPythonPackages\nif not defined APP_PY exit /b 1\nif not exist "%APP_PY%" exit /b 1\ncall :ValidatePipRequirements\nif errorlevel 1 exit /b 1\ncall :RecoverPackageTransaction\nif errorlevel 1 exit /b 1\ncall :CurrentPackagesFullyHealthy'
     if earliest not in source:
         raise ValueError("Dependency lock validation must precede the earliest healthy-runtime fast path")
     helper = next(line for line in source.splitlines() if line.startswith('"%APP_PY%" -I -c "import hashlib, os, stat;'))

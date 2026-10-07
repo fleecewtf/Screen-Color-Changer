@@ -1,3 +1,4 @@
+#requires -Version 5.1
 param(
     [Parameter(Mandatory = $true)]
     [string]$OutputPath
@@ -12,9 +13,11 @@ $output = [IO.Path]::GetFullPath($OutputPath)
 function Read-TrackedBlob([string]$RelativePath) {
     $start = [Diagnostics.ProcessStartInfo]::new('git')
     $start.WorkingDirectory = $root
-    $start.ArgumentList.Add('cat-file')
-    $start.ArgumentList.Add('blob')
-    $start.ArgumentList.Add("HEAD:$RelativePath")
+    if ($RelativePath.IndexOfAny([char[]]@([char]34, [char]13, [char]10)) -ge 0) {
+        throw 'Release blob paths cannot contain quotation marks or line breaks.'
+    }
+    # Windows PowerShell 5.1 uses .NET Framework, which has no ArgumentList.
+    $start.Arguments = 'cat-file blob "HEAD:' + $RelativePath + '"'
     $start.UseShellExecute = $false
     $start.CreateNoWindow = $true
     $start.RedirectStandardOutput = $true
@@ -57,9 +60,9 @@ try {
         throw "The archive filename must be Screen-Color-Changer-v$version.zip."
     }
 
-    $fixed = @('Screen Color Changer.pyw', 'color_math.py', 'screen_backend.py', 'Installer.bat', 'LICENSE', 'READ ME.txt', 'requirements-win-x64.txt', 'requirements-win-arm64.txt')
+    $fixed = @('Screen Color Changer.pyw', 'color_math.py', 'screen_backend.py', 'Installer.bat', 'LICENSE', 'READ ME.txt', 'THIRD_PARTY_NOTICES.txt', 'requirements-win-x64.txt', 'requirements-win-arm64.txt')
     $paths = @($fixed | Sort-Object -CaseSensitive)
-    if ($paths.Count -ne 8 -or (@($paths | Select-Object -Unique)).Count -ne 8) {
+    if ($paths.Count -ne 9 -or (@($paths | Select-Object -Unique)).Count -ne 9) {
         throw 'The release file list is incomplete or contains duplicates.'
     }
     $committed = @{}
@@ -84,6 +87,7 @@ try {
     }
 
     Add-Type -AssemblyName System.IO.Compression
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
     $stamp = [DateTimeOffset]::Parse('2026-09-27T10:00:00+00:00')
     $stream = [IO.File]::Open($output, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
     try {
@@ -108,11 +112,13 @@ try {
             throw 'The completed archive entry list does not match the release file list.'
         }
         foreach ($entry in $check.Entries) {
-            $sourceHash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([byte[]]$committed[$entry.FullName]))
+            $sourceSha = [Security.Cryptography.SHA256]::Create()
+            try { $sourceHash = [BitConverter]::ToString($sourceSha.ComputeHash([byte[]]$committed[$entry.FullName])) }
+            finally { $sourceSha.Dispose() }
             $entryStream = $entry.Open()
             try {
                 $sha = [Security.Cryptography.SHA256]::Create()
-                try { $entryHash = [Convert]::ToHexString($sha.ComputeHash($entryStream)) }
+                try { $entryHash = [BitConverter]::ToString($sha.ComputeHash($entryStream)) }
                 finally { $sha.Dispose() }
             } finally { $entryStream.Dispose() }
             if ($entryHash -cne $sourceHash) { throw "Archive content mismatch: $($entry.FullName)" }

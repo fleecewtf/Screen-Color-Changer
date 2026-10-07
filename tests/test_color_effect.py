@@ -3,10 +3,14 @@
 import ctypes
 import copy
 import json
+import math
 import tempfile
 import unittest
+import sys
 from pathlib import Path
 from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from color_math import ColorValues, color_matrix, gamma_ramp, identity_matrix, matrices_match
 from screen_backend import Effect, ScreenEffect, ScreenEffectError
@@ -92,6 +96,30 @@ class FakeGammaApi:
 
 
 class ColorMathTests(unittest.TestCase):
+    def test_every_hue_preserves_neutral_gray_and_luminance_at_saturation_extremes(self):
+        from color_math import LUMA
+        for hue in range(-180, 181):
+            for saturation in (0, 1, 100, 255, 300):
+                matrix = color_matrix(ColorValues(saturation=saturation, hue=hue))
+                self.assertTrue(all(math.isfinite(value) for value in matrix))
+                for output in range(3):
+                    self.assertAlmostEqual(sum(matrix[source * 5 + output] for source in range(3)), 1.0)
+                for source in range(3):
+                    self.assertAlmostEqual(sum(matrix[source * 5 + output] * LUMA[output]
+                                               for output in range(3)), LUMA[source])
+
+    def test_every_gamma_hundredth_preserves_endpoints_and_uint16_monotonicity(self):
+        original = tuple(round(index / 255 * endpoint) for endpoint in (65535, 64000, 62000)
+                         for index in range(256))
+        for gamma in range(50, 201):
+            ramp = gamma_ramp(original, gamma)
+            self.assertTrue(all(0 <= value <= 65535 for value in ramp))
+            for start in (0, 256, 512):
+                self.assertEqual(ramp[start], original[start])
+                self.assertEqual(ramp[start + 255], original[start + 255])
+                self.assertTrue(all(left <= right for left, right in zip(
+                    ramp[start:start + 255], ramp[start + 1:start + 256])))
+
     def test_neutral_values_produce_identity(self):
         self.assertTrue(matrices_match(color_matrix(ColorValues()), identity_matrix()))
 
