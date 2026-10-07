@@ -105,9 +105,10 @@ appear in a game or HDR session, first try an ordinary SDR desktop window.
 LICENSE
 
 Copyright 2026 Fleece. This project is source-available, not open source.
-The bundled LICENSE permits an unmodified official release for lawful
-personal, non-commercial use. Modification and redistribution are prohibited.
-Third-party materials keep their own licenses. THIRD_PARTY_NOTICES.txt lists
+The bundled LICENSE permits downloading, installing, and running an unmodified
+official release for lawful personal, non-commercial use. Modification and
+redistribution are prohibited. Third-party materials retain their own licenses.
+THIRD_PARTY_NOTICES.txt lists
 the downloaded components, upstream sources and license terms; Fleece's
 restrictions do not remove rights under those third-party licenses.
 
