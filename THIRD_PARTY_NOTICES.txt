@@ -1,5 +1,5 @@
 SCREEN COLOR CHANGER - THIRD-PARTY NOTICES
-Reviewed for v0.3.2, October 6, 2026
+Reviewed for v1.0.0, October 6, 2026
 
 The release ZIP contains Fleece app source, setup instructions and dependency
 locks. It does not bundle Python, pip, PySide6, Shiboken or Qt binaries. After

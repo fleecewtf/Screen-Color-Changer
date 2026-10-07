@@ -1,115 +1,207 @@
-SCREEN COLOR CHANGER - v0.3.2
+SCREEN COLOR CHANGER - v1.0.0
 
-Compact local color-filter utility for 64-bit Windows.
+A little tool I made with AI to fine-tune desktop colors locally on 64-bit Windows.
 
-INSTALL
+features
 
-1. Keep Screen Color Changer.pyw, color_math.py, screen_backend.py,
-   Installer.bat, LICENSE, THIRD_PARTY_NOTICES.txt, this file, and both requirements-win-*.txt files
-   together in one folder.
-2. Double-click Installer.bat.
-3. Press Y once to accept the Terms and bundled Tool License and approve setup.
-4. Leave the setup window open until every check passes.
-5. Double-click the Screen Color Changer shortcut created in the folder.
+- Digital vibrance, Hue, Brightness, Contrast, and Gamma in a compact utility.
+- Live color preview when you drag, scroll, or commit an exact numeric value.
+- Every supported slider step, including 255% vibrance and Gamma 1.03.
+- Apply-only saving and a 15-second inactivity reset for unconfirmed previews.
+- Applied-profile tray mode, prior-color restoration, and local crash recovery.
+- Serialized background display work with bounded latest-value coalescing.
+- Ownership-aware checks that do not overwrite a different, newer external effect.
 
-Keep the complete folder path at 72 characters or fewer.
-Do not use percent signs (%) in the folder path; Windows shortcut creation can
-expand them as environment variables. Spaces, ^, &, parentheses and ! are supported.
+requirements
 
-USE
+64-bit x64 or ARM64 Windows with the full-screen Magnification API available.
+Internet during first setup or dependency repair, but not while adjusting colors.
+A writable normal local folder, not a linked or protected system folder.
+Verified SDR mode on all active displays and supported drivers for non-neutral
+Gamma. Leave Gamma at 1.00 when it is unavailable; the other four controls do
+not need the Gamma API. Every GPU, monitor, HDR session, app, or game is not
+guaranteed compatible.
+
+installation
+
+1. Download the official release ZIP and extract the complete folder.
+2. Keep Screen Color Changer.pyw, color_math.py, screen_backend.py,
+   Installer.bat, LICENSE, THIRD_PARTY_NOTICES.txt, this file, and both
+   requirements-win-*.txt files together.
+3. Double-click Installer.bat.
+4. Press Y once to accept the Terms and bundled Tool License and approve setup.
+5. Leave the setup window open until every check passes.
+6. Double-click the Screen Color Changer shortcut created in the folder.
+
+All Fleece desktop tools use this same ZIP/extract/Installer.bat/confirmation/
+final-checks/folder-shortcut installation workflow. Tool requirements and
+architecture support differ; File Converter remains x64-only.
+
+Keep the complete folder path at 72 characters or fewer. Do not use percent
+signs (%) in the path; Windows shortcut creation can expand them as environment
+variables. Spaces, ^, &, parentheses, and ! are supported.
+
+Setup keeps official Python 3.14.7, PySide6-Essentials 6.11.2, Shiboken 6.11.2,
+settings, and app files private to this folder. It uses the pinned pip 26.2.1
+bootstrap to install private dependencies. No administrator access, system PATH
+change, or global Python installation is needed. Runtime archives and every PyPI
+wheel are checked against pinned SHA-256 hashes before use. Missing, changed,
+or unsafe selected dependency locks stop setup before the first download.
+
+Setup selects the x64 or ARM64 lock automatically. Keep both locks if moving
+between architectures. Rerun Installer.bat to repair or after moving the whole
+folder; it preserves saved values and recreates the shortcut. Repair rejects
+linked/reparse-point private runtimes, verifies architecture, and recovers
+interrupted runtime/package transactions before reuse or another download.
+
+Close the utility before repair and wait for setup to finish before opening
+its shortcut. A shared startup/setup gate prevents overlapping repair and
+launch. Setup checks sources and Windows shortcut support before large
+downloads, compiles all three Python sources before package downloads, and
+runs an offline self-test without changing desktop colors before success.
+
+usage
 
 The compact 496 x 496 window uses the same UI style as the other Fleece tools.
-On smaller or highly scaled screens it fits the work area and scrolls its controls.
-It has Digital vibrance (0-300%, neutral 100%), Hue (-180 to 180 degrees),
-Brightness (-20 to 20%, neutral 0%), Contrast (50-200%, neutral 100%), and
-Gamma (0.50 to 2.00, neutral 1.00). Type an exact value above each slider or
-use its arrow keys. Gamma moves in 0.01 steps, including 1.03. The other
-controls move one unit at a time, including 255% vibrance. Moving or scrolling
-the controls previews the filter immediately. Finish typing a numeric entry
-with Enter or by leaving its box. Rapid edits are coalesced every 75 ms.
-Display work runs serially in the background so a slow driver does not freeze
-the controls. Pending preview edits are coalesced; Apply, Reset and close wait
-for their display operation before reporting completion.
-Apply confirms the latest values and saves them locally. Slider edits alone
-are never saved.
-Apply and close-to-tray check the actual Windows matrix and tracked gamma again;
-an external program's newer effect is not silently reported as successfully applied.
-Unconfirmed previews revert after 15 seconds of inactivity,
-returning to your last applied profile or the prior desktop colors. Continuing
-to adjust a control refreshes this safety timer.
-Typing in an exact-value box also counts as editing activity, without applying
-the incomplete number until you commit it.
-Closing before Apply restores the prior colors and exits. After Apply,
-closing discards any later unsaved edits and keeps the applied profile in the
-tray. Click its icon, choose Open settings, or launch the shortcut again to return
-to the same running utility. Exit and restore
-original colors fully quits. If no tray is available, close always restores.
+On smaller or highly scaled screens it fits the work area and scrolls controls.
+
+Digital vibrance: 0-300%, neutral 100%, step 1%.
+Hue: -180 to 180 degrees, neutral 0, step 1 degree.
+Brightness: -20 to 20%, neutral 0%, step 1%.
+Contrast: 50-200%, neutral 100%, step 1%.
+Gamma: 0.50 to 2.00, neutral 1.00, step 0.01.
+
+Drag or scroll a slider, use its arrow keys, or type an exact number above it.
+Finish typing with Enter or by leaving the numeric box. Gamma selects exact
+hundredths such as 1.03; the other controls select single units such as 255%
+vibrance. Typing counts as activity without applying an incomplete number.
+
+Moving or scrolling controls previews the filter live. Rapid edits are
+coalesced every 75 ms; identical settings are not written again. Display work
+runs in one serialized background worker. New pending preview values replace
+old ones instead of building an unlimited queue. Apply, Reset, recovery, and
+close wait for the corresponding operation before reporting completion.
+
+Apply colors confirms the latest result and saves those exact values locally.
+Slider edits alone are never saved. Apply and close-to-tray verify the actual
+Windows matrix and tracked Gamma instead of treating an external app's newer
+effect as successfully applied.
+
+Unconfirmed previews revert after 15 seconds of inactivity, returning to your
+last applied profile in the current session or to the prior desktop colors.
+Continuing to adjust or type refreshes this safety timer.
+
+Closing before Apply restores prior colors and exits. After Apply, closing
+discards later unsaved edits and keeps only the confirmed profile in the tray.
+Click the tray icon, choose Open settings, or launch the shortcut again to
+reopen the same utility. Exit and restore original colors restores and fully
+quits. If no tray is available, close always restores and exits.
+
 Disable or Esc restores the prior effect while the window has focus. Reset
-immediately restores the prior colors and saves all five neutral values.
-Restoration is ownership-aware: another app's newer effect or a changed
-display is left alone. Saved values do not auto-apply on launch or restart.
-After an unexpected exit, the next launch can offer to restore prior colors
-if the recorded color matrix still matches. An external app applying an
-identical matrix cannot be distinguished by this comparison.
-Crash recovery verifies restoration before deleting its record. Failed restoration
-keeps recovery evidence for a later retry.
-Failed display writes are read back and partial effects are tracked before rollback.
-Ownership uses exact Windows float32 matrix values and exact gamma ramps, not
-similar values. Failed rollback keeps recovery evidence and a safety retry timer.
-Partial restoration and unresolved readbacks retain recovery evidence too.
-Gamma verifies each target's current SDR status, identity and mode before writes.
+also clears the confirmed profile and saves all five neutral values. Saved
+values do not auto-apply on launch or restart; tray mode lasts only for the
+running session.
 
-LIMITATIONS
+A second launch uses a same-user, same-session local named pipe only to reopen
+the existing window. It does not create another filter, send settings, accept
+file paths or commands, or use the internet.
 
-Vibrance, hue, brightness, and contrast use the Windows full-screen color
-matrix. Digital vibrance boosts saturation; its scale differs from NVIDIA's.
-Gamma uses a separate nonlinear curve composed with the saved calibration.
-Gamma requires verified SDR mode and a supported display driver. If it is
-unavailable, leave Gamma at 1.00 to use the other four controls. Readback checks
-reject a curve the driver ignored; the app does not claim it was applied.
-Some HDR, protected-video, exclusive, or independent-flip game surfaces can
-bypass the color effect. Windows Magnifier or other color-calibration apps can
-conflict with it. This version does not select individual monitors.
+display and restoration limits
 
-SETUP DETAILS
+Vibrance, hue, brightness, and contrast use Windows' shared full-screen color
+matrix independently of NVIDIA Control Panel. Digital vibrance boosts
+saturation; its scale differs from NVIDIA's. This release does not independently
+select monitors.
 
-Setup keeps official Python 3.14.7, pip, PySide6-Essentials 6.11.2, settings,
-and app files private to this folder. It needs internet for first setup or
-repair, but does not need administrator access, change PATH, or install global
-packages. Runtime archives and PyPI wheels are checked against pinned SHA-256
-hashes; a missing or changed selected dependency lock stops setup.
-The selected lock is checked before the first download, including during repair.
-Keep both architecture locks if moving between x64 and ARM64 computers. Run
-Installer.bat again to repair or after moving the complete folder.
-Pending runtime recovery happens before deciding another download is needed.
-Close the utility before repair, and wait for setup to finish before opening
-its shortcut. A shared startup/setup gate prevents overlapping repair and launch.
-It compiles all three Python sources before package downloads
-and runs an offline self-test without changing the display before success.
+Gamma uses a nonlinear curve composed with the saved calibration. It requires
+verified SDR on every active display and supported drivers. Readback checks
+reject ignored or partially accepted curves instead of claiming success.
+Each target's SDR status, identity, and captured mode are checked before Gamma
+writes. Gamma 1.00 leaves the existing calibration alone.
 
-PRIVACY AND REMOVAL
+HDR, protected video, exclusive, and independent-flip game surfaces can bypass
+desktop effects. Windows Magnifier and other color/calibration apps can
+conflict with the utility. Every game and video is not guaranteed affected.
 
-No account or telemetry is required. Saved values stay in this folder. Review
-setup.log before sharing because it can contain local folder paths. To remove
-the tool, use Exit and restore original colors in its tray menu (or Disable
-then close), then delete the extracted folder. Applied tray mode is the same
-running utility; no service, startup entry, or global runtime is installed.
+Restoration is ownership-aware: another app's different, newer effect or a
+changed/unverified display is left alone. Ownership compares exact Windows
+float32 matrices and exact Gamma ramps, not merely similar values. An external
+app applying an identical effect cannot be distinguished by comparing values.
 
-TROUBLESHOOTING
+After an unexpected exit, the next launch can offer recovery when it recognizes
+the recorded effect. Failed display and restoration writes are read back, and
+their exact observed partial effects are tracked before rollback or retry.
+Unknown readbacks retain explicit evidence instead of claiming an arbitrary
+later state. A failed restore keeps evidence for a safe retry; an unconfirmed
+active effect gets an automatic safety retry timer.
 
-If setup stops, the window names the failed check and shows a short "How to
-fix it" instruction; setup.log has the same guidance. Re-extract all files
-together if any source or requirements file is missing. If a filter does not
-appear in a game or HDR session, first try an ordinary SDR desktop window.
+Driver, display, or storage failures can still prevent full restoration.
+Review an error, wait for the display and storage to become available, and
+retry. Do not delete recovery evidence while you need it or assume colors
+restored just because a window closed. This is not a safety-critical color tool.
 
-LICENSE
+built with
+
+Python, PySide6, Windows Magnification, and Windows GDI Gamma.
+Official sources and licenses are listed in THIRD_PARTY_NOTICES.txt.
+
+privacy and removal
+
+No telemetry, analytics, advertisements, account, upload, or runtime internet
+request is used. Normal app use does not capture screen images or recordings.
+Confirmed values stay in .runtime\settings.ini. Original colors, display
+identities/modes, intended changes, and verified results used for recovery stay
+in .runtime\color-recovery.json. Setup downloads verified components from
+official Python and PyPI infrastructure. Review setup.log before sharing;
+it can contain local folder paths.
+
+To remove the tool, use Exit and restore original colors in its tray menu, or
+Disable followed by close, before deleting the extracted folder. Review any
+restoration error before deleting recovery evidence. Folder deletion alone
+cannot restore shared Windows color state. Applied tray mode is the same
+running utility. No service, startup entry, global runtime, or uninstaller
+entry is installed.
+
+troubleshooting
+
+If setup stops, the window immediately names the failed check and shows a short
+How to fix it instruction; setup.log has the same guidance. Correct the problem
+and rerun setup. Re-extract all files together if anything is missing.
+
+If the shortcut does not open, close the utility and rerun Installer.bat.
+Keep the complete folder together and wait for setup to finish before opening.
+
+If a filter does not appear in a game or HDR session, first try an ordinary
+SDR desktop window. Disable a conflicting Windows Magnifier or display filter
+before applying this one. Leave Gamma at 1.00 if it is unavailable.
+
+If restoration fails, keep the folder and recovery evidence. Retry Disable
+when display/storage access is available or reopen to review recovery.
+Unknown state is not automatically overwritten just to silence the error.
+
+Repository regression/performance tests use fake display APIs, temporary
+settings/recovery records, and offscreen Qt. They do not change the desktop or
+prove native GPU/HDR/ARM64 compatibility. Full-setup checks should use disposable
+folders. Release/setup-check scripts support Windows PowerShell 5.1 or newer;
+the release builder requires a clean Git tree.
+
+license
 
 Copyright 2026 Fleece. This project is source-available, not open source.
 The bundled LICENSE permits downloading, installing, and running an unmodified
 official release for lawful personal, non-commercial use. Modification and
 redistribution are prohibited. Third-party materials retain their own licenses.
-THIRD_PARTY_NOTICES.txt lists
-the downloaded components, upstream sources and license terms; Fleece's
-restrictions do not remove rights under those third-party licenses.
+
+THIRD_PARTY_NOTICES.txt lists downloaded components, pinned versions, upstream
+sources, and license terms. Fleece's restrictions do not remove applicable
+third-party rights, including library replacement and debugging rights.
+The small release ZIP excludes runtimes, saved values, recovery records, logs,
+generated shortcuts, caches, and developer tests.
+
+note
 
 This project was made with AI.
+
+Use filters only where the app, game, and platform rules allow. Verify
+restoration when fully exiting, and do not rely on this utility for
+safety-critical color decisions.

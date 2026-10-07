@@ -749,6 +749,27 @@ class LivePreviewUiTests(unittest.TestCase):
                  if label.text() == "Esc restores colors"]
         self.assertIn("after Apply, closing keeps them in the tray", notes[0].toolTip())
 
+    def test_regular_window_has_no_horizontal_scrollbar(self):
+        self.window.show()
+        self.window._fit_work_area(QRect(0, 0, 1920, 1080))
+        self.app.processEvents()
+        self.assertEqual(self.window.width(), self.ui.WINDOW_SIZE)
+        self.assertEqual(self.window.scroll_area.horizontalScrollBar().maximum(), 0)
+        self.assertFalse(self.window.scroll_area.widget().autoFillBackground())
+
+    def test_viewport_transparency_does_not_clear_primary_button_background(self):
+        self.window.show()
+        self.window._fit_work_area(QRect(0, 0, 1920, 1080))
+        self.app.processEvents()
+        image = self.window.apply_button.grab().toImage()
+        ratio = image.devicePixelRatio()
+        background = image.pixelColor(round(10 * ratio), image.height() // 2)
+        self.assertEqual(self.window.apply_button.text(), "Apply colors")
+        self.assertGreater(background.red(), 200)
+        self.assertGreater(background.green(), 200)
+        self.assertGreater(background.blue(), 200)
+        self.assertEqual(background.alpha(), 255)
+
     def test_small_work_area_is_scrollable_and_preserves_precise_slider_travel(self):
         self.window.show()
         self.window._fit_work_area(QRect(0, 0, 400, 400))

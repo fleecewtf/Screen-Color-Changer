@@ -108,7 +108,7 @@ from PySide6.QtWidgets import (
 
 
 APP_NAME = "Screen Color Changer"
-APP_VERSION = "0.3.2"
+APP_VERSION = "1.0.0"
 WINDOW_SIZE = 496
 SETTINGS_PATH = ROOT / ".runtime" / "settings.ini"
 RECOVERY_PATH = ROOT / ".runtime" / "color-recovery.json"
@@ -356,11 +356,17 @@ class ColorWindow(QWidget):
         body = QWidget()
         # Keep the full-size precision slider layout inside a scrollable body
         # on smaller/high-DPI work areas rather than clipping bottom controls.
-        body.setMinimumWidth(WINDOW_SIZE - 2)
+        # The outer frame's border and layout margins consume four pixels.
+        # Keep the precision layout without forcing a horizontal bar at 496px.
+        body.setMinimumWidth(WINDOW_SIZE - 4)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setWidget(body)
-        scroll.viewport().setStyleSheet("background: transparent;")
+        body.setAutoFillBackground(False)
+        # A selectorless stylesheet here also clears every child background,
+        # including the primary button, leaving black text on a black surface.
+        scroll.viewport().setObjectName("colorViewport")
+        scroll.viewport().setStyleSheet("QWidget#colorViewport { background: transparent; }")
         self.scroll_area = scroll
         page.addWidget(scroll)
         layout = QVBoxLayout(body)
