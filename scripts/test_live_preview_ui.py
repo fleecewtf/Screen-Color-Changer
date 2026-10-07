@@ -1,4 +1,4 @@
-"""Offscreen Qt tests; all color effects and settings are isolated fakes."""
+"""Source-only offscreen Qt checks; effects and settings are isolated fakes."""
 
 import importlib.machinery
 import importlib.util

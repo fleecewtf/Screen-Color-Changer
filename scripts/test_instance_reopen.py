@@ -1,4 +1,4 @@
-"""Offscreen settings-only IPC; fake color effects never load display APIs."""
+"""Source-only offscreen IPC checks; fake color effects never load display APIs."""
 
 import importlib.machinery
 import importlib.util

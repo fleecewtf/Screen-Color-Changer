@@ -1,4 +1,4 @@
-"""Pure-math and fake-DLL tests; never touch the real display."""
+"""Source-only pure-math and fake-DLL checks; never touch the real display."""
 
 import ctypes
 import copy

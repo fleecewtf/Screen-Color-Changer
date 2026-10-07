@@ -1,4 +1,4 @@
-"""Live-preview backend regressions using fake APIs, never real displays."""
+"""Source-only live-preview regressions using fake APIs, never real displays."""
 
 import json
 import tempfile

@@ -1,4 +1,4 @@
-"""Failure-injected display transactions. Never load or modify native APIs."""
+"""Source-only failure-injected transactions. Never load or modify native APIs."""
 
 import ctypes
 import json

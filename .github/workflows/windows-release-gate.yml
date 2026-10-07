@@ -102,20 +102,7 @@ jobs:
           # Test modules inject FakeMagnification/FakeGammaApi/FakeEffect and
           # disposable settings/recovery paths. IPC/startup checks use private
           # named pipes/mutexes, not a native color session or real UI automation.
-          $code = @'
-          import os, sys, unittest
-          from pathlib import Path
-          os.environ['QT_QPA_PLATFORM'] = 'offscreen'
-          root = Path(os.environ['GITHUB_WORKSPACE']).resolve()
-          tests = root / 'tests'
-          sys.path[:0] = [str(root), str(tests)]
-          suite = unittest.defaultTestLoader.discover(str(tests), pattern='test_*.py')
-          if suite.countTestCases() == 0:
-              raise SystemExit('No fake-display regression tests were discovered.')
-          result = unittest.TextTestRunner(verbosity=2).run(suite)
-          raise SystemExit(0 if result.wasSuccessful() else 1)
-          '@
-          & $python -I -B -c $code
+          & $python -I -B (Join-Path $env:GITHUB_WORKSPACE 'scripts\Test-AppSafety.py')
           if ($LASTEXITCODE -ne 0) { throw 'Fake-display/offscreen source regressions failed.' }
 
       - name: Upload diagnostics if a gate fails
