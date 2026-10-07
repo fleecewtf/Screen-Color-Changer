@@ -179,12 +179,6 @@ If restoration fails, keep the folder and recovery evidence. Retry Disable
 when display/storage access is available or reopen to review recovery.
 Unknown state is not automatically overwritten just to silence the error.
 
-Repository regression/performance tests use fake display APIs, temporary
-settings/recovery records, and offscreen Qt. They do not change the desktop or
-prove native GPU/HDR/ARM64 compatibility. Full-setup checks should use disposable
-folders. Release/setup-check scripts support Windows PowerShell 5.1 or newer;
-the release builder requires a clean Git tree.
-
 license
 
 Copyright 2026 Fleece. This project is source-available, not open source.

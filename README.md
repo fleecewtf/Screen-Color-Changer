@@ -2,7 +2,7 @@
 
 # screen color changer
 
-Current release: **v1.0.0**. Includes exact live controls, ownership-aware recovery, offline regression/performance checks, and shared setup hardening.
+Current release: **v1.0.0**. Includes exact live controls, ownership-aware recovery, and verified private-runtime setup.
 
 All Fleece desktop tools use the same installation workflow: download the official ZIP, extract the entire folder, run `Installer.bat`, accept the bundled Terms/Tool License, wait for final checks, then open the folder-local shortcut. Setup installs a private runtime without changing system Python or requiring administrator access. Rerun it to repair or refresh a moved shortcut. Keep the full path at most 72 characters, without percent signs. Architecture support and extra components vary by tool; File Converter remains x64-only.
 
@@ -84,10 +84,6 @@ Before deleting the folder, choose **Exit and restore original colors**, or Disa
 Setup shows failed checks and **How to fix it** guidance in its window and `setup.log`. Correct the issue and rerun `Installer.bat`; it also recreates a broken or moved shortcut. Success requires dependencies, offline self-tests, and the shortcut to pass.
 
 Try an SDR desktop window if a game ignores filters. Use Gamma **1.00** if unavailable. For restoration errors, keep recovery files; retry **Disable** when display/storage are available or reopen to review recovery. Do not delete evidence just to dismiss an error.
-
-## offline regression checks
-
-Run `.runtime\python\python.exe -I -B scripts/Test-AppSafety.py` from the source folder. Fake APIs, isolated files, and offscreen Qt never change desktop colors or prove GPU/HDR/game compatibility. Technical details, setup fixtures, and the performance benchmark are in [scripts/DEVELOPMENT.md](scripts/DEVELOPMENT.md).
 
 ## license
 
