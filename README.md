@@ -4,7 +4,9 @@
 
 Current release: **v1.0.0**. Includes exact live controls, ownership-aware recovery, and verified private-runtime setup.
 
-All Fleece desktop tools use the same installation workflow: download the official ZIP, extract the entire folder, run `Installer.bat`, accept the bundled Terms/Tool License, wait for final checks, then open the folder-local shortcut. Setup installs a private runtime without changing system Python or requiring administrator access. Rerun it to repair or refresh a moved shortcut. Keep the full path at most 72 characters, without percent signs. Architecture support and extra components vary by tool; File Converter remains x64-only.
+**Small installer:** Download the small installer ZIP, extract the entire folder, run `Installer.bat`, accept the Terms and bundled Tool License, wait for final checks, then open the folder-local shortcut. Setup keeps its runtime private without changing system Python or PATH or requiring administrator access. Rerun it to repair or refresh a moved shortcut. Keep the full path at most 72 characters, without percent signs. The small installer retains this tool's documented architecture support; File Converter remains x64-only.
+
+**Ready-to-run (Windows x64):** A larger ZIP includes the private runtime already bundled. Extract the entire folder, open `Screen Color Changer.exe`, and accept the Terms and bundled Tool License on first use. There is no `Installer.bat` step and no system Python or PATH change. Keep the EXE with the rest of the folder. This option is x64, not native ARM64; the setup instructions below describe the small installer option.
 
 A little tool I made with AI to fine-tune desktop colors locally on 64-bit Windows.
 
